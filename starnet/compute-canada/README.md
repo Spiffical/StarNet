@@ -5,7 +5,7 @@ given by `--num_train`, etc.
 ```
 python /path/to/starnet/compute-canada/create_trainStarNet_jobscript.py \
 --output_path $SCRATCH/jobs/todo/job.sh \
---data_path /path/to/training_dataset.h5 \ #test
+--data_path /path/to/training_dataset.h5 \ <!--- comment -->
 --num_train 200000 \
 --targets teff logg M_H a_M \
 --spec_key spectra_starnetnorm \
