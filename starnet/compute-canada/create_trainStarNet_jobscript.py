@@ -1,6 +1,8 @@
 import os
 import argparse
 
+VIRTUAL_ENV = 'py36'
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--output_path', type=str, default='./submit_job.sh',
                     help='Path of training file')
@@ -34,11 +36,14 @@ args = parser.parse_args()
 def write_script(home_dir, output_path, data_path, num_train, targets, save_folder, spec_key, batch_size, epochs, zeros,
                  telluric_file, finetune_model, model_to_train):
 
+    if not output_path.endswith('.sh'):
+        output_path += '.sh'
+
     print('Writing file to {}'.format(output_path))
     with open(output_path, 'w') as writer:
         writer.write('#!/bin/bash\n')
         writer.write('module load python/3.6\n')
-        writer.write('source {}\n'.format(os.path.join(home_dir, 'py36/bin/activate')))
+        writer.write('source {}\n'.format(os.path.join(home_dir, VIRTUAL_ENV, 'bin/activate')))
         writer.write('\n\n')
         writer.write('python {}'.format(os.path.join(home_dir, 'StarNet/train_StarNet.py \\\n')))
         writer.write('--datafile_path %s \\\n' % data_path)

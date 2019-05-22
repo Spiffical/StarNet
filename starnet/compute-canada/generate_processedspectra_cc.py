@@ -1,5 +1,5 @@
 import os, sys
-sys.path.insert(0, os.getenv('HOME'))
+sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import numpy as np
 import time
 import warnings
@@ -165,6 +165,7 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
             vt = param_data['VT']
         elif spectral_grid_name == 'ambre':
             # TODO: fill this out
+            print('not done yet')
             # flux_ = data[:,1]
             # s = os.path.basename(filename)
 
@@ -239,13 +240,13 @@ def main():
     file_list = glob.glob(os.path.join(args.spec_dir, '*.fits'))
 
     # Get observational and synthetic wavelength grids
-    wave_grid_obs = np.load(args.wave_grid_obs_file)
+    wave_grid_obs = np.load(args.obs_wave_file)
     if args.grid == 'intrigoss':
         hdulist = pyfits.open(file_list[0])
         wave_grid_synth = hdulist[1].data['wavelength']
     elif args.grid == 'phoenix':
         try:
-            hdulist = pyfits.open(args.wave_grid_synth_file)
+            hdulist = pyfits.open(args.synth_wave_file)
             wave_grid_synth = hdulist[0].data
 
             # For Phoenix, need to convert from vacuum to air wavelengths.
@@ -276,7 +277,10 @@ def main():
     if len(existing_files) > 0:
         for f in existing_files:
             f = os.path.basename(f)
-            num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
+            try:
+                num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
+            except:
+                num_spec_in_file = 6
             total_num_spec += num_spec_in_file
 
     print('Number of spectra already processed: {}/{}'.format(total_num_spec, args.max_num_spec))
@@ -334,7 +338,10 @@ def main():
         existing_files = glob.glob(args.save_dir + '/*')
         for f in existing_files:
             f = os.path.basename(f)
-            num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
+            try:
+                num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
+            except:
+                num_spec_in_file = 6
             total_num_spec += num_spec_in_file
         print('Total # of spectra in directory: {}/{}'.format(total_num_spec, args.max_num_spec))
 
