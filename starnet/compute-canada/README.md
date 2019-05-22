@@ -1,4 +1,4 @@
-The following will create a Compute Canada job script in `$SCRATCH/jobs/todo/' named `job.sh` (as defined by '--output_path`).
+The following will create a Compute Canada job script in `$SCRATCH/jobs/todo` named `job.sh` (as defined by `--output_path`).
 It is also necessary to define the path to the h5 training dataset given by `--data_path`, the number of training examples 
 given by `--num_train`, etc.
 
