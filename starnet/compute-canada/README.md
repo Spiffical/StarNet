@@ -34,5 +34,5 @@ python compute-canada-goodies/python/queue_cc.py \
 where `--account` is the Compute Canada account you are associated with, and `--num_runs` is the number of times a particular 
 job will run: for example, if the value is 4 then one such job will be scheduled, by default, for increments of *3 hours each*
 (for minimum turnaround time) with each subsequent iteration beginning after the previous one. This is used in our case to
-train a StarNet model and save the current best model weights to `weights.best.h5`, which each iteration of a job loading the
-best model weights and finetuning.
+train a StarNet model and save the current best model weights to `weights.best.h5`, which each iteration of a job will load 
+and fine-tune.
