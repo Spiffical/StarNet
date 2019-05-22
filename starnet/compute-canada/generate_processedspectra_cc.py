@@ -36,10 +36,6 @@ def parse_args():
                         help='path of synthetic wavelength grid (only needed if in separate file)')
     parser.add_argument('-g', '--grid', type=str, default='phoenix',
                         help='name of spectral grid to be used')
-    parser.add_argument('-ho', '--host', type=str, default=None,
-                        help='if transferring to remote server (not vospace), define username')
-    parser.add_argument('--ip', type=str, default=None,
-                        help='if transferring to remote server (not vospace), define ip address')
     parser.add_argument('-b', '--batch_size', type=int, default=32,
                         help='number of spectra per batch')
     parser.add_argument('-n', '--noise', type=float, default=0.07,
@@ -301,7 +297,7 @@ def main():
                                                    max_vrot=args.rotational_vel,
                                                    max_vrad=args.radial_vel,
                                                    max_noise=args.noise,
-                                                   spectral_grid_name=args.spectral_grid_name,
+                                                   spectral_grid_name=args.grid,
                                                    max_teff=args.max_teff,
                                                    min_teff=args.min_teff,
                                                    max_logg=args.max_logg,
