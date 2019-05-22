@@ -2,7 +2,7 @@ The following will create a Compute Canada job script in `$SCRATCH/jobs/todo` na
 It is also necessary to define the path to the h5 training dataset given by `--data_path`, the number of training examples 
 given by `--num_train`, etc.
 
-```python
+```
 python /path/to/starnet/compute-canada/create_trainStarNet_jobscript.py \
 --output_path $SCRATCH/jobs/todo/job.sh \
 --data_path /path/to/training_dataset.h5 \
