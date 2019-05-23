@@ -1,13 +1,17 @@
 import os
 import argparse
 
-VIRTUAL_ENV = 'py36'
+HOME_DIR = os.getenv('HOME')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--output_path', type=str, default='./submit_job.sh',
                     help='Path of training file')
 parser.add_argument('--data_path', type=str,
                     help='Path of training file')
+parser.add_argument('--train_script', type=str, default=os.path.join(HOME_DIR, 'StarNet/starnet/train_StarNet.py'),
+                    help='Path to training script')
+parser.add_argument('--virtual_env', type=str, required=True,
+                    help='Name of the virtual environment to use')
 parser.add_argument('--num_train', type=int,
                     help='Size of training set')
 parser.add_argument('--targets', nargs='+', required=True,
@@ -33,8 +37,8 @@ parser.add_argument('--ensemble', type=int, default=1,
 args = parser.parse_args()
 
 
-def write_script(home_dir, output_path, data_path, num_train, targets, save_folder, spec_key, batch_size, epochs, zeros,
-                 telluric_file, finetune_model, model_to_train):
+def write_script(output_path, data_path, train_script, virtual_env, num_train, targets, save_folder, spec_key,
+                 batch_size, epochs, zeros, telluric_file, finetune_model, model_to_train):
 
     if not output_path.endswith('.sh'):
         output_path += '.sh'
@@ -43,9 +47,9 @@ def write_script(home_dir, output_path, data_path, num_train, targets, save_fold
     with open(output_path, 'w') as writer:
         writer.write('#!/bin/bash\n')
         writer.write('module load python/3.6\n')
-        writer.write('source {}\n'.format(os.path.join(home_dir, VIRTUAL_ENV, 'bin/activate')))
+        writer.write('source {}\n'.format(os.path.join(HOME_DIR, virtual_env, 'bin/activate')))
         writer.write('\n\n')
-        writer.write('python {}'.format(os.path.join(home_dir, 'StarNet/train_StarNet.py \\\n')))
+        writer.write('python {} \\\n'.format(train_script))
         writer.write('--datafile_path %s \\\n' % data_path)
         writer.write('--num_train %s \\\n' % num_train)
         writer.write('--targets')
@@ -62,16 +66,18 @@ def write_script(home_dir, output_path, data_path, num_train, targets, save_fold
         writer.write('--model_to_train %s' % model_to_train)
 
 
-home_dir = os.getenv('HOME')
+output_path = args.output_path
+if not output_path.endswith('.sh'):
+    output_path += '.sh'
 
 if args.ensemble > 1:
     for i in range(args.ensemble):
         save_folder_ensemble = os.path.join(args.save_folder, 'model{}'.format(i))
-        output_path_ensemble = args.output_path[:-3] + '_{}.sh'.format(i)
-        write_script(home_dir, output_path_ensemble, args.data_path, args.num_train, args.targets, save_folder_ensemble,
-                     args.spec_key, args.batch_size, args.epochs, args.zeros, args.telluric_file, args.finetune_model,
-                     args.model_to_train)
+        output_path_ensemble = output_path[:-3] + '_{}.sh'.format(i)
+        write_script(output_path_ensemble, args.data_path, args.train_script, args.virtual_env, args.num_train,
+                     args.targets, save_folder_ensemble, args.spec_key, args.batch_size, args.epochs, args.zeros,
+                     args.telluric_file, args.finetune_model, args.model_to_train)
 else:
-    write_script(home_dir, args.output_path, args.data_path, args.num_train, args.targets, args.save_folder,
-                 args.spec_key, args.batch_size, args.epochs, args.zeros, args.telluric_file, args.finetune_model,
-                 args.model_to_train)
+    write_script(output_path, args.data_path, args.train_script, args.virtual_env, args.num_train, args.targets,
+                 args.save_folder, args.spec_key, args.batch_size, args.epochs, args.zeros, args.telluric_file,
+                 args.finetune_model, args.model_to_train)
