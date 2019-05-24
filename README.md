@@ -9,7 +9,7 @@ A script has been provided [(`starnet/train_StarNet.py`)](https://github.com/Spi
 
 ```
 python /path/to/starnet/train_StarNet.py \
---data_path /path/to/training_dataset.h5 \
+--datafile_path /path/to/training_dataset.h5 \
 --num_train 50000 \
 --targets teff logg M_H a_M \
 --spec_key spectra_starnetnorm \
