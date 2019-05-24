@@ -1,5 +1,5 @@
 import os, sys
-sys.path.insert(0, os.getenv('HOME'))
+sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import time
 import json
 import datetime
@@ -84,6 +84,7 @@ class BaseModel(object):
         self.l2 = 0
         self.batch_size = 32
         self.dropout_rate = 0
+        self.last_layer_activation = 'linear'
 
         ### Optimizer parameters
         self.beta_1 = 0.9  # exponential decay rate for the 1st moment estimates for optimization algorithm
@@ -248,7 +249,7 @@ class BaseModel(object):
         layer_4 = Dense(units=self.num_hidden[1], kernel_initializer=self.initializer, activation=self.activation,
                         kernel_regularizer=l2(self.l2), bias_regularizer=l2(self.l2))(layer_3)
         layer_out = Dense(units=len(self.targetname), kernel_initializer=self.initializer,
-                          activation=self._last_layer_activation, name='output')(
+                          activation=self.last_layer_activation, name='output')(
             layer_4)
         model = Model(inputs=input_tensor, outputs=layer_out)
 

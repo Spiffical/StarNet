@@ -1,11 +1,11 @@
 import os, sys
-sys.path.insert(0, os.getenv('HOME'))
+sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import csv
 import numpy as np
 
 from starnet.nn.models.base_cnn import BaseModel
 from starnet.nn.utilities.custom_layers import GaussianLayer
-from StarNet.nn.utilities.custom_losses import gaussian_loss
+from starnet.nn.utilities.custom_losses import gaussian_loss
 
 from keras.layers import MaxPooling1D, Conv1D, Dense, Flatten, Input, Dropout, Activation
 from keras.models import Model, load_model
@@ -28,6 +28,7 @@ class StarNet2017(BaseModel):
         self.l2 = 0
         self.optimizer = Adam(lr=self.lr, beta_1=self.beta_1, beta_2=self.beta_2, epsilon=self.optimizer_epsilon,
                               clipnorm=1.)
+        self.last_layer_activation = 'linear'
 
     def model(self):
         input_tensor = Input(shape=self.get_input_shape(), name='input')
@@ -44,7 +45,7 @@ class StarNet2017(BaseModel):
         layer_4 = Dense(units=self.num_hidden[1], kernel_initializer=self.initializer, activation=self.activation,
                         kernel_regularizer=l2(self.l2), bias_regularizer=l2(self.l2))(layer_3)
         layer_out = Dense(units=len(self.targetname), kernel_initializer=self.initializer,
-                          activation=self._last_layer_activation, name='output')(
+                          activation=self.last_layer_activation, name='output')(
             layer_4)
         model = Model(inputs=input_tensor, outputs=layer_out)
 
