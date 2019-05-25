@@ -1,5 +1,5 @@
 import os, sys
-sys.path.insert(0, os.getenv('HOME'))
+sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import argparse
 from starnet.nn.models.cnn_models import StarNet2017, StarNet2017DeepEnsemble
 
@@ -82,7 +82,7 @@ if save_folder is not None and finetune_model is not None:
 elif save_folder is not None and finetune_model is None:
     if os.path.exists(save_folder):
         print('Save folder provided already exists. Creating new folder to avoid overwriting')
-        save_folder = None  # None type results in unique foldername generation
+        NN.save_folder = None  # None type results in unique foldername generation
 
 # Start the training
 NN.train()
