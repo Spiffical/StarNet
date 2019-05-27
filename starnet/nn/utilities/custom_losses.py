@@ -15,5 +15,5 @@ def gaussian_loss(sigma):
     def loss(y_true, y_pred):
         #return tf.reduce_mean(0.5*tf.log(sigma) + 0.5*tf.div(tf.square(y_true - y_pred), sigma)) + 4
         div_result = Lambda(lambda x: x[0] / x[1])([K.square(y_true - y_pred), sigma])
-        return K.mean(0.5*tf.log(sigma) + 0.5*div_result) + 4
+        return K.mean(0.5*tf.log(sigma) + 0.5*div_result) + 5
     return loss
