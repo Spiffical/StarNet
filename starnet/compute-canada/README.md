@@ -13,7 +13,7 @@ python /path/to/starnet/compute-canada/create_trainStarNet_jobscript.py \
 --batch_size 32 \
 --epochs 35 \
 --zeros 0.10 \
---telluric_file /path/to/data/telluric_lines.txt \
+--telluric_file /path/to/starnet/data/telluric_lines.txt \
 --finetune_model weights.best.h5 \
 --model_to_train StarNet2017 
 ```
