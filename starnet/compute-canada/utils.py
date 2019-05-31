@@ -1,3 +1,4 @@
+import os
 from astropy.io import fits as pyfits
 import numpy as np
 
@@ -76,9 +77,9 @@ def get_synth_spec_data(data_filename, grid_name='phoenix'):
         # TODO: finish this
         flux = np.genfromtxt(data_filename, usecols=2)
 
-        # s = os.path.basename(filename)
-        # flux_ = data[:,1]
-        # s = os.path.basename(filename)
+        # The filename can be used to acquire the stellar parameters
+        filename = os.path.basename(data_filename)
+
 
     return flux, params
 
