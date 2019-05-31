@@ -4,7 +4,7 @@ import argparse
 HOME_DIR = os.getenv('HOME')
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--output_path', type=str, default='./submit_job.sh',
+parser.add_argument('--output_path', type=str, default='./jobs/todo/submit_job.sh',
                     help='Path of training file')
 parser.add_argument('--data_path', type=str,
                     help='Path of training file')
@@ -34,11 +34,13 @@ parser.add_argument('--model_to_train', type=str, default='StarNet2017',
                     help='Type of model to train')
 parser.add_argument('--ensemble', type=int, default=1,
                     help='Number of models to train in an ensemble')
+parser.add_argument('--num_gpu', type=int, default=1,
+                    help='Number of GPUs available for training')
 args = parser.parse_args()
 
 
 def write_script(output_path, data_path, train_script, virtual_env, num_train, targets, save_folder, spec_key,
-                 batch_size, epochs, zeros, telluric_file, finetune_model, model_to_train):
+                 batch_size, epochs, zeros, telluric_file, finetune_model, num_gpu, model_to_train):
 
     if not output_path.endswith('.sh'):
         output_path += '.sh'
@@ -63,21 +65,25 @@ def write_script(output_path, data_path, train_script, virtual_env, num_train, t
         writer.write('--zeros %s \\\n' % zeros)
         writer.write('--telluric_file %s \\\n' % telluric_file)
         writer.write('--finetune_model %s \\\n' % finetune_model)
+        writer.write('--num_gpu %s \\\n' % num_gpu)
         writer.write('--model_to_train %s' % model_to_train)
 
 
-output_path = args.output_path
-if not output_path.endswith('.sh'):
-    output_path += '.sh'
+output_job_path = args.output_path
+output_job_folder = os.path.dirname(output_job_path)
+if not os.path.exists(output_job_folder):
+    os.makedirs(output_job_folder)
+if not output_job_path.endswith('.sh'):
+    output_job_path += '.sh'
 
 if args.ensemble > 1:
     for i in range(args.ensemble):
         save_folder_ensemble = os.path.join(args.save_folder, 'model{}'.format(i))
-        output_path_ensemble = output_path[:-3] + '_{}.sh'.format(i)
+        output_path_ensemble = output_job_path[:-3] + '_{}.sh'.format(i)
         write_script(output_path_ensemble, args.data_path, args.train_script, args.virtual_env, args.num_train,
                      args.targets, save_folder_ensemble, args.spec_key, args.batch_size, args.epochs, args.zeros,
-                     args.telluric_file, args.finetune_model, args.model_to_train)
+                     args.telluric_file, args.finetune_model, args.num_gpu, args.model_to_train)
 else:
-    write_script(output_path, args.data_path, args.train_script, args.virtual_env, args.num_train, args.targets,
+    write_script(output_job_path, args.data_path, args.train_script, args.virtual_env, args.num_train, args.targets,
                  args.save_folder, args.spec_key, args.batch_size, args.epochs, args.zeros, args.telluric_file,
-                 args.finetune_model, args.model_to_train)
+                 args.finetune_model, args.num_gpu, args.model_to_train)

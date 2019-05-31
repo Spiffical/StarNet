@@ -7,20 +7,18 @@ import random
 import glob
 import h5py
 import argparse
-import multiprocessing
 import uuid
 
-from starnet.data.utilities.data_augmentation import add_noise, continuum_normalize, continuum_normalize_parallel, \
-    add_zeros, convolve_spectrum, fastRotBroad, rotBroad, add_radial_velocity, rebin
-from operator import itemgetter
-from multiprocessing import Pool as ThreadPool
-from astropy.io import fits as pyfits
+from starnet.data.utilities.data_augmentation import continuum_normalize_parallel, \
+     modify_spectra_parallel, rebin
+from utils import get_synth_spec_data, ensure_constant_sampling, get_synth_wavegrid
 
 warnings.filterwarnings('ignore')
 
 # Define parameters needed for continuum fitting
 LINE_REGIONS = [[4210, 4240], [4250, 4410], [4333, 4388], [4845, 4886], [5160, 5200], [5874, 5916], [6530, 6590]]
-SEGMENTS_STEP = 10. # divide the spectrum into segments of 10 Angstroms
+SEGMENTS_STEP = 10.  # divide the spectrum into segments of 10 Angstroms
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -63,51 +61,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def modify_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., from_res=300000, to_res=20000, i=0):
-
-    # Degrade resolution
-    err = np.zeros(len(flux))
-    _, flux, _ = convolve_spectrum(wav, flux, err, from_resolution=from_res, to_resolution=to_res)
-
-    # Apply rotational broadening
-    if rot != 0:
-        epsilon = random.uniform(0, 1.)
-        flux = fastRotBroad(wav, flux, epsilon, rot)
-
-    # Add radial velocity
-    if vrad != 0:
-        wav = add_radial_velocity(wav, vrad)
-
-    # Rebin to new wave grid
-    flux = rebin(wav, new_wav, flux)
-
-    # Add noise
-    flux = add_noise(flux, noise)
-
-    return flux, i
-
-
-def modify_spectra_parallel(spectra, wvl, wave_grid_obs, vrot_list, noise_list, vrad_list, instrument_res, batch_size=32):
-
-    # Make the pool of workers for parallel processing
-    if batch_size < multiprocessing.cpu_count():
-        pool = ThreadPool(batch_size)
-    else:
-        pool = ThreadPool(multiprocessing.cpu_count())
-
-    # Modify spectra in parallel
-    results = [pool.apply_async(modify_spectrum, args=(spectra[i], wvl, wave_grid_obs,
-                                                       vrot_list[i], noise_list[i], vrad_list[i],
-                                                       None, instrument_res, i)) for i in range(len(spectra))]
-    answers = [result.get() for result in results]
-
-    # Ensure order is preserved (pool.apply_async doesn't guarantee this)
-    spectra = sorted(answers, key=itemgetter(1))
-    spectra = [t[0] for t in spectra]
-
-    return spectra
-
-
 def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, batch_size=32, max_vrot=70, max_vrad=200,
                    max_noise=0.07, spectral_grid_name='phoenix', max_teff=np.Inf, min_teff=-np.Inf,
                    max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf):
@@ -129,53 +82,31 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
     extension = 10  # Angstroms
     wave_min_request = wave_grid_obs[0] - extension
     wave_max_request = wave_grid_obs[-1] + extension
-
     wave_indices = (wave_grid_synth > wave_min_request) & (wave_grid_synth < wave_max_request)
+    wvl = wave_grid_synth[wave_indices]
 
     # Collect data for batch_size number of raw synthetic spectra
     t1 = time.time()
-    while np.shape(spectra)[0]<batch_size:
+    while np.shape(spectra)[0] < batch_size:
         # Randomly collect a batch from the dataset
         batch_index = random.choice(range(0, len(file_list)))
         batch_file = file_list[batch_index]
 
-        # Collect spectrum from file
-        # data = np.genfromtxt(str(filename), skip_header=indx_beg, skip_footer=indx_end, usecols=(0,2))
-        hdulist = pyfits.open(batch_file)
-
-        if spectral_grid_name == 'phoenix':
-            flux_ = hdulist[0].data
-            param_data = hdulist[0].header
-            teff = param_data['PHXTEFF']
-            logg = param_data['PHXLOGG']
-            m_h = param_data['PHXM_H']
-            a_m = param_data['PHXALPHA']
-            vt = param_data['PHXXI_L']
-        elif spectral_grid_name == 'intrigoss':
-            flux_ = hdulist[1].data['surface_flux']
-            param_data = hdulist[0].header
-            teff = param_data['TEFF']
-            logg = param_data['LOG_G']
-            m_h = param_data['FEH']
-            a_m = param_data['ALPHA']
-            vt = param_data['VT']
-        elif spectral_grid_name == 'ambre':
-            # TODO: fill this out
-            print('not done yet')
-            # flux_ = data[:,1]
-            # s = os.path.basename(filename)
+        # Collect flux and stellar parameters from file
+        flux, params = get_synth_spec_data(batch_file, spectral_grid_name)
+        teff, logg, m_h, a_m, vt = params
 
         # Skip this spectrum if beyond requested temperature, logg, or metallicity limits
         if (teff > max_teff) or (teff < min_teff) or (logg > max_logg) or (logg < min_logg) or \
                 (m_h > max_feh) or (m_h < min_feh):
-            hdulist.close()
             continue
         else:
             vrad = random.uniform(-max_vrad, max_vrad)  # km/s
             vrot = random.uniform(0, max_vrot)  # km/s
             noise = np.random.rand() * max_noise
 
-            spectra.append(flux_[wave_indices])
+            # Fill up lists
+            spectra.append(flux[wave_indices])
             teff_list.append(teff)
             logg_list.append(logg)
             m_h_list.append(m_h)
@@ -184,44 +115,31 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
             vrot_list.append(vrot)
             vrad_list.append(vrad)
             noise_list.append(noise)
-        hdulist.close()
     t2 = time.time()
     print('Time taken to collect spectra: %.1f s' % (t2 - t1))
 
-    # First check if wavelength array is evenly spaced. If not, modify it to be.
-    wvl = wave_grid_synth[wave_indices]
-    sp = wvl[1::] - wvl[0:-1]
-    sp = np.append(abs(wvl[0] - wvl[1]), sp)
-    sp = sp.round(decimals=5)
-
-    unique_vals, ind, counts = np.unique(sp, return_index=True, return_counts=True)
-
-    if len(unique_vals) > 1:  # Wavelength array is sampled differently throughout
-
-        # Rebin fluxes to the coarsest sampling found in the wavelength grid
-        coarsest_sampling = max(unique_vals[counts > 1])
-        new_wave_grid = np.arange(wvl[0], wvl[-1], coarsest_sampling)
-
+    # First make sure the wavelength array is evenly sampled.
+    constant_sampling_wvl = ensure_constant_sampling(wvl)
+    if constant_sampling_wvl != wvl:
         for i, spec in enumerate(spectra):
-            mod_spec = rebin(wvl, new_wave_grid, spec)
+            mod_spec = rebin(constant_sampling_wvl, wvl, spec)
             spectra[i] = mod_spec
-
-        wvl = new_wave_grid
+    wvl = constant_sampling_wvl
 
     # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)
     t1 = time.time()
-    spectra = modify_spectra_parallel(spectra, wvl, wave_grid_obs, vrot_list, noise_list, vrad_list, instrument_res,
-                                      batch_size)
+    spectra = modify_spectra_parallel(spectra, wvl, wave_grid_obs, vrot_list, noise_list, vrad_list,
+                                      instrument_res)
     print('Total modify time: %.1f s' % (time.time() - t1))
 
     # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
     t1 = time.time()
     spectra_asym_sigma = continuum_normalize_parallel(spectra, LINE_REGIONS, wave_grid_obs, SEGMENTS_STEP,
-                                                      'asym_sigmaclip', 2.0, 0.5, batch_size)
+                                                      'asym_sigmaclip', 2.0, 0.5)
 
     # Continuum normalize spectra with corrected sigma clipping continuum fitting method
     spectra_c_sigma = continuum_normalize_parallel(spectra, LINE_REGIONS, wave_grid_obs, SEGMENTS_STEP,
-                                                  'c_sigmaclip', 2.0, 0.5, batch_size)
+                                                  'c_sigmaclip', 2.0, 0.5)
     print('Total continuum time: %.2f s' % (time.time() - t1))
 
     params = teff_list, logg_list, m_h_list, a_m_list, vt_list, vrot_list, vrad_list, noise_list
@@ -236,37 +154,22 @@ def main():
     # Collect file list
     file_list = glob.glob(os.path.join(args.spec_dir, '*.fits'))
 
-    # Get observational and synthetic wavelength grids
+    # Get observational wavelength grid (stored in saved numpy array)
     wave_grid_obs = np.load(args.obs_wave_file)
-    if args.grid == 'intrigoss':
-        hdulist = pyfits.open(file_list[0])
-        wave_grid_synth = hdulist[1].data['wavelength']
-    elif args.grid == 'phoenix':
-        try:
-            hdulist = pyfits.open(args.synth_wave_file)
-            wave_grid_synth = hdulist[0].data
 
-            # For Phoenix, need to convert from vacuum to air wavelengths.
-            # The IAU standard for conversion from air to vacuum wavelengths is given
-            # in Morton (1991, ApJS, 77, 119). For vacuum wavelengths (VAC) in
-            # Angstroms, convert to air wavelength (AIR) via:
-            #  AIR = VAC / (1.0 + 2.735182E-4 + 131.4182 / VAC^2 + 2.76249E8 / VAC^4)
-            vac = wave_grid_synth[0]
-            wave_grid_synth = wave_grid_synth / (
-                    1.0 + 2.735182E-4 + 131.4182 / wave_grid_synth**2 + 2.76249E8 / wave_grid_synth**4)
-            air = wave_grid_synth[0]
-            print('vac: {}, air: {}'.format(vac, air))
-        except:
-            print('Need to supply script with a synthetic wavelength file')
-    elif args.grid == 'ambre':
-        # TODO: fix this section
-        wave_grid_synth = np.genfromtxt(file_list[0], usecols=0)
-        wave_min = wave_grid_synth[0]
-        wave_max = wave_grid_synth[-1]
-        dw = wave_grid_synth[1] - wave_grid_synth[0]
+    # Get synthetic wavelength grid
+    # TODO: have these stored in data directory
+    if args.grid == 'intrigoss' or args.grid == 'ambre':
+        synth_wave_filename = file_list[0]
+    elif args.grid == 'phoenix':
+        if args.synth_wave_file is None:
+            raise ValueError('for Phoenix grid, need to supply separate file containing wavelength grid')
+        else:
+            synth_wave_filename = args.synth_wave_file
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
                          '(phoenix, intrigoss, or ambre)'.format(args.grid))
+    wave_grid_synth = get_synth_wavegrid(args.grid, synth_wave_filename)
 
     # Determine total number of spectra already in chosen directory
     total_num_spec = 0
@@ -274,12 +177,8 @@ def main():
     if len(existing_files) > 0:
         for f in existing_files:
             f = os.path.basename(f)
-            try:
-                num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
-            except:
-                num_spec_in_file = 6
+            num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
             total_num_spec += num_spec_in_file
-
     print('Number of spectra already processed: {}/{}'.format(total_num_spec, args.max_num_spec))
 
     # Generate the batches of spectra
@@ -290,7 +189,7 @@ def main():
             print('Maximum number of spectra reached.')
             break
 
-        # Process of a batch of raw synthetic spectra
+        # Process a batch of raw synthetic spectra
         t0_batch = time.time()
         print('Creating a batch of spectra...')
         spec_asym, spec_c, params = generate_batch(file_list, wave_grid_synth, wave_grid_obs, args.resolution,
@@ -335,10 +234,7 @@ def main():
         existing_files = glob.glob(args.save_dir + '/*')
         for f in existing_files:
             f = os.path.basename(f)
-            try:
-                num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
-            except:
-                num_spec_in_file = 6
+            num_spec_in_file = int(f[37:])  # Number of spectra appended on to end of filename
             total_num_spec += num_spec_in_file
         print('Total # of spectra in directory: {}/{}'.format(total_num_spec, args.max_num_spec))
 
