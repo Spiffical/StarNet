@@ -151,10 +151,16 @@ def main():
     # Collect arguments
     args = parse_args()
 
+    # Check if supplied grid name is valid
+    grid_name = args.grid.lower()
+    if grid_name not in ['intrigoss', 'phoenix', 'ambre']:
+        raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
+                         '(phoenix, intrigoss, or ambre)'.format(grid_name))
+
     # Collect file list
-    if args.grid == 'intrigoss' or args.grid == 'phoenix':
+    if grid_name == 'intrigoss' or grid_name == 'phoenix':
         file_extension = 'fits'
-    else:
+    elif grid_name == 'ambre':
         file_extension = 'AMBRE'
 
     file_list = glob.glob(os.path.join(args.spec_dir, '*.{}'.format(file_extension)))
@@ -164,17 +170,14 @@ def main():
 
     # Get synthetic wavelength grid
     # TODO: have these stored in data directory
-    if args.grid == 'intrigoss' or args.grid == 'ambre':
+    if grid_name == 'intrigoss' or grid_name == 'ambre':
         synth_wave_filename = file_list[0]
-    elif args.grid == 'phoenix':
+    elif grid_name == 'phoenix':
         if args.synth_wave_file is None:
             raise ValueError('for Phoenix grid, need to supply separate file containing wavelength grid')
         else:
             synth_wave_filename = args.synth_wave_file
-    else:
-        raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
-                         '(phoenix, intrigoss, or ambre)'.format(args.grid))
-    wave_grid_synth = get_synth_wavegrid(args.grid, synth_wave_filename)
+    wave_grid_synth = get_synth_wavegrid(grid_name, synth_wave_filename)
 
     # Determine total number of spectra already in chosen directory
     total_num_spec = 0
@@ -202,7 +205,7 @@ def main():
                                                    max_vrot=args.rotational_vel,
                                                    max_vrad=args.radial_vel,
                                                    max_noise=args.noise,
-                                                   spectral_grid_name=args.grid,
+                                                   spectral_grid_name=grid_name,
                                                    max_teff=args.max_teff,
                                                    min_teff=args.min_teff,
                                                    max_logg=args.max_logg,
