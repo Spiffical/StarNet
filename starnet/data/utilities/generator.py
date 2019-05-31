@@ -1,3 +1,6 @@
+import os, sys
+sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+
 import keras
 import numpy as np
 

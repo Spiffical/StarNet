@@ -1,16 +1,12 @@
 import numpy as np
-import math
 import random
-import scipy.signal as spsi
 import astropy
-from random import shuffle
 import multiprocessing
-from multiprocessing import Pool as ThreadPool
 from astropy.stats import sigma_clip
-from operator import itemgetter
 from scipy import interpolate
-from pysynphot import observation
-from pysynphot import spectrum as pysynspec
+from contextlib import contextmanager
+from spectres import spectres
+from contextlib import contextmanager
 
 
 def get_noise(flux):
@@ -210,33 +206,37 @@ def fit_continuum(flux, line_regions, wav, segments_step=10, sigma_upper=2.0,
     return cont_array, j
 
 
-def continuum_normalize(flux, line_regions, wav, segments_step=10, fit='asym_sigmaclip', i=0, sigma_upper=2.0, 
+def continuum_normalize(flux, line_regions, wav, segments_step=10, fit='asym_sigmaclip', sigma_upper=2.0,
                         sigma_lower=0.5):
     
     flux_copy = np.copy(flux)
     cont, _ = fit_continuum(flux_copy, line_regions, wav, segments_step, sigma_upper, sigma_lower, fit=fit)
     norm_flux = flux_copy / cont
 
-    return norm_flux, i, cont
+    return norm_flux, cont
 
 
-def continuum_normalize_parallel(fluxes, line_regions, wav, segments_step=10, fit='asym_sigmaclip', sigma_upper=2.0, 
-                        sigma_lower=0.5, batch_size=32):
+def continuum_normalize_parallel(spectra, line_regions, wav, segments_step=10, fit='asym_sigmaclip', sigma_upper=2.0,
+                        sigma_lower=0.5):
 
-    # Make the pool of workers for parallel processing
-    if batch_size < multiprocessing.cpu_count():
-        pool = ThreadPool(batch_size)
-    else:
-        pool = ThreadPool(multiprocessing.cpu_count())
+    @contextmanager
+    def poolcontext(*args, **kwargs):
+        pool = multiprocessing.Pool(*args, **kwargs)
+        yield pool
+        pool.terminate()
 
-    results = [pool.apply_async(continuum_normalize, args=(fluxes[i], line_regions, wav, segments_step,
-                                                           fit, i, sigma_upper, sigma_lower)) for i in range(len(fluxes))]
-    answers = [result.get() for result in results]
-    
-    # Ensure order is preserved (pool.apply_async doesn't guarantee this)
-    norm_fluxes = sorted(answers, key=itemgetter(1))
-    norm_fluxes = [spec[0] for spec in norm_fluxes]
-    
+    num_spec = np.shape(spectra)[0]
+    num_cpu = multiprocessing.cpu_count()
+    pool_size = num_cpu if num_spec >= num_cpu else num_spec
+
+    pool_arg_list = [(spectra[i], line_regions, wav,
+                      segments_step, fit, sigma_upper,
+                      sigma_lower) for i in range(num_spec)]
+    with poolcontext(processes=pool_size) as pool:
+        results = pool.starmap(continuum_normalize, pool_arg_list)
+
+    norm_fluxes = [result[0] for result in results]
+
     return norm_fluxes
 
 
@@ -262,25 +262,40 @@ def add_zeros(x, max_zeros=150):
     return x
 
 
-def add_radial_velocity(wav, rv):
+def rebin(new_wav, old_wav, flux):
+
+    from pysynphot import observation
+    from pysynphot import spectrum as pysynspec
+
+    f_ = np.ones(len(old_wav))
+    spec_ = pysynspec.ArraySourceSpectrum(wave=old_wav, flux=flux)
+    filt = pysynspec.ArraySpectralElement(old_wav, f_, waveunits='angstrom')
+    obs = observation.Observation(spec_, filt, binset=new_wav, force='taper')
+    newflux = obs.binflux
+    return newflux
+
+
+def add_radial_velocity(wav, rv, flux=None):
     """
     This function adds radial velocity effects to a spectrum.
     
     wav: wavelength array
-    spec: spectral flux array
     rv: radial velocity (km/s)
+    flux: spectral flux array
     """
-    #--- Radial Velocity correction ------------------------------------------------
     # Speed of light in m/s
     c = 299792458.0
-    # Correct wavelength scale for radial velocity
-    # - Newtonian version:
-    ##Radial/barycentric velocity from km/s to m/s
-    ##velocity = velocity * 1000
-    #spectrum['waveobs'] = spectrum['waveobs'] / ((velocity / c) + 1)
-    # - Relativistic version:
-    wav = wav * np.sqrt((1.-(-rv*1000.)/c)/(1.+(-rv*1000.)/c))
-    return wav
+
+    # New wavelength array with added radial velocity
+    new_wav = wav * np.sqrt((1.-(-rv*1000.)/c)/(1.+(-rv*1000.)/c))
+
+    # if flux array provided, interpolate it onto this new wavelength grid and return both,
+    # otherwise just return the new wavelength grid
+    if flux is not None:
+        new_flux = rebin(new_wav, wav, flux)
+        return new_wav, new_flux
+    else:
+        return new_wav
 
 
 def add_zeros_global_error(x, error_indx):
@@ -290,14 +305,29 @@ def add_zeros_global_error(x, error_indx):
     return x
 
 
-def rebin(old_wav, new_wav, flux):
+def rebin_old(new_wav, old_wav, flux):
 
-    f_ = np.ones(len(old_wav))
-    spec_ = pysynspec.ArraySourceSpectrum(wave=old_wav, flux=flux)
-    filt = pysynspec.ArraySpectralElement(old_wav, f_, waveunits='angstrom')
-    obs = observation.Observation(spec_, filt, binset=new_wav, force='taper')
-    newflux = obs.binflux
-    return newflux
+    # Ensure the new wavelength grid falls within the old wavelength grid (need for spectres resampling function,
+    # and unfortunately the code requires that the endpoints of the wavelength arrays cannot even be identical, the
+    # new wavelengths must have a larger minimum value and a smaller maximum value)
+    lhs_new = new_wav[0]
+    lhs_old = old_wav[0]
+    rhs_new = new_wav[-1]
+    rhs_old = old_wav[-1]
+
+    if lhs_new <= lhs_old and rhs_new <= rhs_old:
+        indices = new_wav >= lhs_old
+        new_wav = new_wav[indices][1:-1]
+        flux = flux[indices][1:-1]
+    elif lhs_new >= lhs_old and rhs_new >= rhs_old:
+        indices = new_wav <= rhs_old
+        new_wav = new_wav[indices][1:-1]
+        flux = flux[indices][1:-1]
+
+    # Call the spectres function to resample the input spectrum or spectra to the new wavelength grid
+    spec_resample = spectres(new_wav, old_wav, flux)
+
+    return spec_resample
 
 
 def convolve_spectrum(waveobs, flux, err, to_resolution, from_resolution=None):
@@ -748,4 +778,72 @@ def smooth(x,window_len=11,window='hanning'):
     y=np.convolve(w/w.sum(),s,mode='valid')
     return y  
 
+
+def modify_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=20000):
+    """
+
+    :param flux: an array of flux values
+    :param wav: synthetic wavelength grid
+    :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
+    :param rot: value of rotational velocity (km/s) to apply to flux array
+    :param noise: value of noise (fraction of flux value) to apply to flux array
+    :param vrad: value of radial velocity (km/s) to apply to flux array
+    :param to_res: resolution of output flux array requested
+
+    :return: modified flux array
+    """
+    # Degrade resolution
+    err = np.zeros(len(flux))
+    _, flux, _ = convolve_spectrum(wav, flux, err, to_resolution=to_res)
+
+    # Apply rotational broadening
+    if rot != 0:
+        epsilon = random.uniform(0, 1.)
+        flux = fastRotBroad(wav, flux, epsilon, rot)
+
+    # Add radial velocity
+    if vrad != 0:
+        wav, flux = add_radial_velocity(wav, vrad, flux)
+
+    # Rebin to new wave grid
+    flux = rebin(new_wav, wav, flux)
+
+    # Add noise
+    flux = add_noise(flux, noise)
+
+    return flux
+
+
+def modify_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_list, instrument_res):
+    """
+    Modifies (in parallel) a list of spectra with rotational velocity, radial velocity, noise, and resolution
+    degradation.
+
+    :param spectra: list of spectra
+    :param wav: synthetic wavelength grid
+    :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
+    :param vrot_list: a list, same length as spectra list, of rotational velocities (km/s) to apply
+    :param noise_list: a list, same length as spectra list, of maximum noise (fraction of flux) to apply
+    :param vrad_list: a list, same length as spectra list, of radial velocities (km/s) to apply
+    :param instrument_res: instrumental resolution to degrade the synthetic spectra to
+
+    :return: a list of modified input spectra
+    """
+
+    @contextmanager
+    def poolcontext(*args, **kwargs):
+        pool = multiprocessing.Pool(*args, **kwargs)
+        yield pool
+        pool.terminate()
+
+    num_spectra = np.shape(spectra)[0]
+    num_cpu = multiprocessing.cpu_count()
+    pool_size = num_cpu if num_spectra >= num_cpu else num_spectra
+
+    pool_arg_list = [(spectra[i], wav, new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
+                     for i in range(num_spectra)]
+    with poolcontext(processes=pool_size) as pool:
+        results = pool.starmap(modify_spectrum, pool_arg_list)
+
+    return results
 
