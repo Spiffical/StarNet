@@ -152,7 +152,12 @@ def main():
     args = parse_args()
 
     # Collect file list
-    file_list = glob.glob(os.path.join(args.spec_dir, '*.fits'))
+    if args.grid == 'intrigoss' or args.grid == 'phoenix':
+        file_extension = 'fits'
+    else:
+        file_extension = 'AMBRE'
+
+    file_list = glob.glob(os.path.join(args.spec_dir, '*.{}'.format(file_extension)))
 
     # Get observational wavelength grid (stored in saved numpy array)
     wave_grid_obs = np.load(args.obs_wave_file)
