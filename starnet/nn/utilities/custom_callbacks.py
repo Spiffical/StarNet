@@ -82,6 +82,7 @@ class CustomModelCheckpoint(Callback):
                 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
+        num_outputs = len(self.model.outputs)
         self.epochs_since_last_save += 1
         if self.epochs_since_last_save >= self.period:
             self.epochs_since_last_save = 0
@@ -100,8 +101,10 @@ class CustomModelCheckpoint(Callback):
                                      current, filepath))
                         self.best = current
                         if self.save_weights_only:
+                            #self.model.layers[-(num_outputs + 1)].save_weights(filepath, overwrite=True)
                             self.model.save_weights(filepath, overwrite=True)
                         else:
+                            #self.model.layers[-(num_outputs + 1)].save(filepath, overwrite=True)
                             self.model.save(filepath, overwrite=True)
                     else:
                         if self.verbose > 0:
@@ -111,8 +114,10 @@ class CustomModelCheckpoint(Callback):
                 if self.verbose > 0:
                     print('\nEpoch %05d: saving model to %s' % (epoch + 1, filepath))
                 if self.save_weights_only:
+                    #self.model.layers[-(num_outputs + 1)].save_weights(filepath, overwrite=True)
                     self.model.save_weights(filepath, overwrite=True)
                 else:
+                    #self.model.layers[-(num_outputs + 1)].save(filepath, overwrite=True)
                     self.model.save(filepath, overwrite=True)
 
 

@@ -44,7 +44,7 @@ class GaussianLayer(Layer):
     def call(self, x):
         output_mu  = K.dot(x, self.kernel_1) + self.bias_1
         output_sig = K.dot(x, self.kernel_2) + self.bias_2
-        output_sig_pos = softplus(output_sig)
+        output_sig_pos = softplus(output_sig) + 1e-3
         return [output_mu, output_sig_pos]
 
     def compute_output_shape(self, input_shape):
