@@ -1,7 +1,7 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import argparse
-from starnet.nn.models.cnn_models import StarNet2017, StarNet2017DeepEnsemble
+from starnet.nn.models.cnn_models import StarNet2017, StarNet2017DeepEnsemble, StarResNet, StarResNetDeepEnsemble
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--datafile_path', type=str, required=True,
@@ -29,6 +29,8 @@ parser.add_argument('-m', '--finetune_model', type=str, default=None,
 parser.add_argument('-n', '--noise', type=float, default=None,
                     help='Maximum fraction of noise to be added to spectra (if training set does not already have'
                          'noise added in the spectra)')
+parser.add_argument('-g', '--num_gpu', type=int, default=1,
+                    help='Number of GPUs available for training')
 args = parser.parse_args()
 
 datafile_path = args.datafile_path
@@ -43,11 +45,16 @@ batch_size = args.batch_size
 telluric_mask_file = args.telluric_file
 finetune_model = args.finetune_model
 max_noise = args.noise
+num_gpu = args.num_gpu
 
 if model_to_train == 'StarNet2017':
     NN = StarNet2017()
 elif model_to_train == 'StarNet2017DeepEnsemble':
     NN = StarNet2017DeepEnsemble()
+elif model_to_train == 'StarResNet':
+    NN = StarResNet()
+elif model_to_train == 'StarResNetDeepEnsemble':
+    NN = StarResNetDeepEnsemble()
 else:
     raise ValueError('Model type {} not valid'.format(model_to_train))
 
@@ -61,11 +68,12 @@ NN.telluric_mask_file = telluric_mask_file
 NN.num_train = num_train
 NN.spec_norm = True  # if True, the spectrum is already normalized so don't perform continuum normalization
 
-NN.verbose = 2  # 0: nothing, 1: progress bar, 2: epoch
+NN.verbose = 1  # 0: nothing, 1: progress bar, 2: epoch
 NN.batch_size = batch_size
 NN.max_epochs = max_epochs
 NN.max_added_noise = max_noise
 NN.max_frac_zeros = max_frac_zeros
+NN.num_gpu = num_gpu
 
 # To enable autosave
 NN.autosave = True
