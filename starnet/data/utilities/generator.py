@@ -4,8 +4,9 @@ sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import keras
 import numpy as np
 
-from starnet.data.utilities.data_augmentation import add_noise, continuum_normalize, add_zeros, add_zeros_global_error, telluric_mask
-from starnet.data.utilities.load_data import load_batch_from_h5, load_batch_from_vmh5batch
+from starnet.data.utilities.data_augmentation import add_noise, continuum_normalize, add_zeros, \
+    add_zeros_global_error, telluric_mask
+from starnet.data.utilities.load_data import load_batch_from_h5
 
 
 class DataGenerator(keras.utils.Sequence):
@@ -52,7 +53,7 @@ class DataGenerator(keras.utils.Sequence):
 
     def __len__(self):
         'Denotes the number of batches per epoch'
-        return int(np.floor(len(self.indices) / self.batch_size))
+        return np.floor(len(self.indices) // self.batch_size)
 
     def __getitem__(self, index):
         'Generate one batch of data'

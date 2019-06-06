@@ -1,13 +1,16 @@
+import sys
 import numpy as np
 import random
 import astropy
 import multiprocessing
+import time
 from astropy.stats import sigma_clip
 from scipy import interpolate
 from contextlib import contextmanager
 from spectres import spectres
 from contextlib import contextmanager
-
+from pysynphot import observation
+from pysynphot import spectrum as pysynspec
 
 def get_noise(flux):
     
@@ -264,9 +267,6 @@ def add_zeros(x, max_zeros=150):
 
 def rebin(new_wav, old_wav, flux):
 
-    from pysynphot import observation
-    from pysynphot import spectrum as pysynspec
-
     f_ = np.ones(len(old_wav))
     spec_ = pysynspec.ArraySourceSpectrum(wave=old_wav, flux=flux)
     filt = pysynspec.ArraySpectralElement(old_wav, f_, waveunits='angstrom')
@@ -292,7 +292,9 @@ def add_radial_velocity(wav, rv, flux=None):
     # if flux array provided, interpolate it onto this new wavelength grid and return both,
     # otherwise just return the new wavelength grid
     if flux is not None:
+        t = time.time()
         new_flux = rebin(new_wav, wav, flux)
+        print('[INFO] Time taken to rebin RV: {:.2f}s'.format(time.time() - t))
         return new_wav, new_flux
     else:
         return new_wav
@@ -776,7 +778,7 @@ def smooth(x,window_len=11,window='hanning'):
         w=eval('np.'+window+'(window_len)')
     
     y=np.convolve(w/w.sum(),s,mode='valid')
-    return y  
+    return y
 
 
 def modify_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=20000):
@@ -839,6 +841,7 @@ def modify_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_l
     num_spectra = np.shape(spectra)[0]
     num_cpu = multiprocessing.cpu_count()
     pool_size = num_cpu if num_spectra >= num_cpu else num_spectra
+    print('[INFO] Pool size: {}'.format(pool_size))
 
     pool_arg_list = [(spectra[i], wav, new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
                      for i in range(num_spectra)]
