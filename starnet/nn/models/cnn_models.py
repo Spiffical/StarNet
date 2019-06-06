@@ -6,9 +6,14 @@ import numpy as np
 from starnet.nn.models.base_cnn import BaseModel
 from starnet.nn.utilities.custom_layers import GaussianLayer
 from starnet.nn.utilities.custom_losses import gaussian_loss
+from starnet.nn.models.resnet_architecture import identity_block, conv_block
 
-from keras.layers import MaxPooling1D, Conv1D, Dense, Flatten, Input, Dropout, Activation
+from keras.layers import Dense, Flatten, Input, Dropout, Activation
+from keras.layers.pooling import MaxPooling1D, AveragePooling1D, GlobalAveragePooling1D
+from keras.layers.convolutional import Conv1D, ZeroPadding1D
+from keras.layers.normalization import BatchNormalization
 from keras.models import Model, load_model
+from keras.initializers import glorot_uniform
 from keras.regularizers import l2
 from keras.optimizers import Adam
 
@@ -116,6 +121,228 @@ class StarNet2017DeepEnsemble(StarNet2017):
             self.keras_model.compile(loss=self.loss_func(sigma), optimizer=self.optimizer, metrics=self.metrics)
 
         return None
+
+
+class StarResNet(BaseModel):
+
+    def __init__(self):
+        super(StarResNet, self).__init__()
+        self._model_type = 'StarNet_ResNet'
+        self.last_layer_activation = 'linear'
+
+    def model(self):
+        """
+        Implementation of the popular ResNet the following architecture:
+        CONV1D -> BATCHNORM -> RELU -> CONVBLOCK -> IDBLOCK*2 -> CONVBLOCK -> IDBLOCK*3
+        -> CONVBLOCK -> IDBLOCK*5 -> CONVBLOCK -> IDBLOCK*2 -> AVGPOOL -> TOPLAYER
+        modified version retrieved from two sources:
+            https://github.com/priya-dwivedi/Deep-Learning/blob/master/resnet_keras/
+            https://github.com/viig99/mkscancer/blob/master/medcan_evaluate_next.py
+
+        Returns:
+        model -- a Model() instance in Keras
+        """
+
+        x_input = Input(self.get_input_shape())
+
+        # Zero-Padding
+        x = ZeroPadding1D(3)(x_input)
+
+        # Stage 1
+        x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_uniform(seed=0))(x)
+        x = BatchNormalization(name='bn_conv1')(x)
+        x = Activation('relu')(x)
+        #x = MaxPooling1D(3, strides=2)(x)
+
+        # Stage 2
+        x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
+        x = identity_block(x, 3, [4, 4, 16], stage=2, block='b')
+        x = identity_block(x, 3, [4, 4, 16], stage=2, block='c')
+
+        # Stage 3
+        x = conv_block(x, kernel_size=3, filters=[8, 8, 32], stage=3, block='a', s=2)
+        x = identity_block(x, 3, [8, 8, 32], stage=3, block='b')
+        x = identity_block(x, 3, [8, 8, 32], stage=3, block='c')
+        x = identity_block(x, 3, [8, 8, 32], stage=3, block='d')
+
+        # Stage 4
+        x = conv_block(x, kernel_size=3, filters=[16, 16, 64], stage=4, block='a', s=2)
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='b')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='c')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='d')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='e')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='f')
+
+        # Stage 5
+        x = conv_block(x, kernel_size=3, filters=[32, 32, 128], stage=5, block='a', s=2)
+        x = identity_block(x, 3, [32, 32, 128], stage=5, block='b')
+        x = identity_block(x, 3, [32, 32, 128], stage=5, block='c')
+
+        # AVGPOOL
+        x = AveragePooling1D(2, name="avg_pool")(x)
+
+        # Output layer
+        x = Flatten()(x)
+        x = Dense(len(self.targetname), activation=self.last_layer_activation, name='fc' + str(len(self.targetname)),
+                  kernel_initializer=glorot_uniform(seed=0))(x)
+
+        # Create model
+        model = Model(inputs=x_input, outputs=x, name='ResNet')
+
+        return model
+
+
+class StarResNetDeepEnsemble(StarNet2017DeepEnsemble):
+
+    def __init__(self):
+        super(StarResNetDeepEnsemble, self).__init__()
+        self._model_type = 'StarResNet_DeepEnsemble'
+
+    def model(self):
+        x_input = Input(self.get_input_shape())
+
+        # Zero-Padding
+        x = ZeroPadding1D(3)(x_input)
+
+        # Stage 1
+        x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_uniform(seed=0))(x)
+        x = BatchNormalization(name='bn_conv1')(x)
+        x = Activation('relu')(x)
+        # x = MaxPooling1D(3, strides=2)(x)
+
+        # Stage 2
+        x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
+        x = identity_block(x, 3, [4, 4, 16], stage=2, block='b')
+        x = identity_block(x, 3, [4, 4, 16], stage=2, block='c')
+
+        # Stage 3
+        x = conv_block(x, kernel_size=3, filters=[8, 8, 32], stage=3, block='a', s=2)
+        x = identity_block(x, 3, [8, 8, 32], stage=3, block='b')
+        x = identity_block(x, 3, [8, 8, 32], stage=3, block='c')
+        x = identity_block(x, 3, [8, 8, 32], stage=3, block='d')
+
+        # Stage 4
+        x = conv_block(x, kernel_size=3, filters=[16, 16, 64], stage=4, block='a', s=2)
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='b')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='c')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='d')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='e')
+        x = identity_block(x, 3, [16, 16, 64], stage=4, block='f')
+
+        # Stage 5
+        x = conv_block(x, kernel_size=3, filters=[32, 32, 128], stage=5, block='a', s=2)
+        x = identity_block(x, 3, [32, 32, 128], stage=5, block='b')
+        x = identity_block(x, 3, [32, 32, 128], stage=5, block='c')
+
+        # AVGPOOL
+        x = AveragePooling1D(2, name="avg_pool")(x)
+
+        # Output layer
+        x = Flatten()(x)
+        mu, sigma = GaussianLayer(len(self.targetname), name='main_output')(x)
+
+        # Create model
+        model = Model(inputs=x_input, outputs=mu, name='ResNetDeepEnsemble')
+
+        return model, sigma
+
+
+class StarResNet_old(BaseModel):
+
+    def __init__(self):
+        super(StarResNet_old, self).__init__()
+        self.last_layer_activation = 'linear'
+
+    def model(self):
+        """
+        Implementation of the popular ResNet
+        https://www.kaggle.com/meownoid/tiny-resnet-with-keras-99-314
+
+        Returns:
+        model -- a Model() instance in Keras
+        """
+        from keras.layers.merge import add
+        def block(n_output, upscale=False):
+            # n_output: number of feature maps in the block
+            # upscale: should we use the 1x1 conv2d mapping for shortcut or not
+
+            # keras functional api: return the function of type
+            # Tensor -> Tensor
+            def f(x):
+
+                # H_l(x):
+                # first pre-activation
+                h = BatchNormalization()(x)
+                h = Activation('relu')(h)
+                # first convolution
+                h = Conv1D(kernel_size=3, filters=n_output, strides=1, padding='same')(h)
+
+                # second pre-activation
+                h = BatchNormalization()(h)
+                h = Activation('relu')(h)
+                # second convolution
+                h = Conv1D(kernel_size=3, filters=n_output, strides=1, padding='same')(h)
+
+                # f(x):
+                if upscale:
+                    # 1x1 conv2d
+                    f = Conv1D(kernel_size=1, filters=n_output, strides=1, padding='same')(x)
+                else:
+                    # identity
+                    f = x
+
+                # F_l(x) = f(x) + H_l(x):
+                return add([f, h])
+
+            return f
+
+
+        x_input = Input(self.get_input_shape())
+
+        # first conv2d with post-activation to transform the input data to some reasonable form
+        x = Conv1D(kernel_size=3, filters=4, strides=1, padding='same')(x_input)
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+
+        # F_1
+        x = block(4)(x)
+        # F_2
+        x = block(4)(x)
+
+        # F_3
+        # H_3 is the function from the tensor of size 28x28x16 to the the tensor of size 28x28x32
+        # and we can't add together tensors of inconsistent sizes, so we use upscale=True
+        x = block(8, upscale=True)(x)       # !!! <------- Uncomment for local evaluation
+        # F_4
+        x = block(8)(x)                     # !!! <------- Uncomment for local evaluation
+        # F_5
+        x = block(8)(x)                     # !!! <------- Uncomment for local evaluation
+
+        # F_6
+        x = block(16, upscale=True)(x)       # !!! <------- Uncomment for local evaluation
+        # F_7
+        x = block(16)(x)                     # !!! <------- Uncomment for local evaluation
+
+        # last activation of the entire network's output
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+
+        # average pooling across the channels
+        # 28x28x48 -> 1x48
+        x = AveragePooling1D()(x)
+
+        # dropout for more robust learning
+        #x = Dropout(0.2)(x)
+
+        # output layer
+        x = Flatten()(x)
+        x = Dense(len(self.targetname), activation=self.last_layer_activation, name='fc' + str(len(self.targetname)),
+                  kernel_initializer=glorot_uniform(seed=0))(x)
+
+        # Create model
+        model = Model(inputs=x_input, outputs=x, name='ResNet')
+
+        return model
 
     
 class BCNN(StarNet2017):

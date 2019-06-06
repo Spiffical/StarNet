@@ -8,6 +8,7 @@ import numpy as np
 import tensorflow as tf
 import multiprocessing
 import h5py
+import csv
 
 from starnet.data.utilities.generator import DataGenerator
 from starnet.nn.utilities.custom_callbacks import CustomModelCheckpoint, CustomReduceLROnPlateau
@@ -16,6 +17,8 @@ from keras.optimizers import Adam
 from keras.regularizers import l2
 from keras.models import load_model, Model
 from keras.layers import MaxPooling1D, Conv1D, Dense, Flatten, Input
+from keras import Model
+from keras.utils import multi_gpu_model
 
 from sklearn.model_selection import train_test_split
 
@@ -48,6 +51,23 @@ def folder_runnum():
     return folder_name
 
 
+class ModelMGPU(Model):
+    def __init__(self, ser_model, gpus):
+        pmodel = multi_gpu_model(ser_model, gpus)
+        self.__dict__.update(pmodel.__dict__)
+        self._smodel = ser_model
+
+    def __getattribute__(self, attrname):
+        '''Override load and save methods to be used from the serial-model. The
+           serial-model holds references to the weights in the multi-gpu model.
+           '''
+        if 'load' in attrname or 'save' in attrname:
+           return getattr(self._smodel, attrname)
+        else:
+           #return Model.__getattribute__(self, attrname)
+           return super(ModelMGPU, self).__getattribute__(attrname)
+
+
 class BaseModel(object):
     """
     Base functionality that all models share.
@@ -57,11 +77,12 @@ class BaseModel(object):
         input_shape: input feature vector shape.
     """
 
-    def __init__(self, targetname=['teff', 'logg', 'M_H'], input_shape=(None, 29850, 1)):
+    def __init__(self, targetname=['teff', 'logg', 'M_H'], input_shape=None):
         self.folder_name = None
         self.model_parameter_filename = 'model_parameter.json'
         self.name = ''
         self.keras_model = None
+        self.mgpu_keras_model = None
         self._model_type = ''
         self._python_info = sys.version
         self._keras_ver = keras.__version__
@@ -140,6 +161,7 @@ class BaseModel(object):
         self.verbose = 2
         self.premade_batches = False
         self.use_multiprocessing = True
+        self.num_gpu = 1
 
     def get_wave_grid(self):
 
@@ -160,11 +182,20 @@ class BaseModel(object):
 
     def get_input_shape(self):
 
-        if self.wav is None:
-            # Load data file, pull out wave grid
-            self.wav = self.get_wave_grid()
+        if self.input_shape is not None:
+            return self.input_shape
+        else:
+            if self.wav is None:
+                # Load data file, pull out wave grid
+                if self.data_filename is not None:
+                    print('Input shape not given, attempting to retrieve from wavelength grid in h5 file: '
+                          '{}...'.format(self.data_filename))
+                    wave_grid = self.get_wave_grid()
+                    self.wav = wave_grid
+            else:
+                pass
 
-        return (len(self.wav), 1)
+            return (len(self.wav), 1)
 
     def get_mu_and_sigma(self):
 
@@ -204,7 +235,7 @@ class BaseModel(object):
         model_parameter_filepath = os.path.join(self.fullfilepath, self.model_parameter_filename)
 
         if os.path.exists(model_parameter_filepath):
-            sys.stdout.write('Acquiring mu and sigma from model parameter file...\n')
+            sys.stdout.write('[INFO] Acquiring mu and sigma from model parameter file...\n')
             with open(model_parameter_filepath, 'r') as f:
                 datastore = json.load(f)
                 mu = np.asarray(datastore['mu'])
@@ -212,7 +243,7 @@ class BaseModel(object):
                 print('mu: {}'.format(mu))
                 print('sigma: {}'.format(sigma))
         else:
-            sys.stdout.write('Calculating mu and sigma to normalize each label...\n')
+            sys.stdout.write('[INFO] Calculating mu and sigma to normalize each label...\n')
             with h5py.File(self.data_filename, 'r') as f:
                 mu = []
                 sigma = []
@@ -229,9 +260,38 @@ class BaseModel(object):
 
         return mu, sigma
 
-    def load_pretrained_model(self, model):
+    def load_pretrained_model(self, model_path):
 
-        self.keras_model = load_model(model)
+        # Load model weights
+        model = self.model()
+        model.load_weights(model_path)
+        self.keras_model = model
+
+        # If there is already a training log, collect latest learning rate
+        self.fullfilepath = os.path.join(self.currentdir, self.folder_name)
+        training_log_path = os.path.join(self.fullfilepath, 'training.log')
+        if os.path.exists(training_log_path):
+            with open(training_log_path, mode='r') as csv_file:
+                csv_reader = csv.DictReader(csv_file)
+                learning_rates = []
+                for row in csv_reader:
+                    learning_rates.append(float(row['lr']))
+                if not np.isnan(learning_rates).all():  # Don't try to find min if all NaNs
+                    self.lr = np.nanmin(learning_rates)
+                print('[LOAD MODEL] Last learning rate of lr={} collected from: {}'.format(self.lr,
+                                                                                           training_log_path))
+
+        # Define optimizer
+        self.optimizer = Adam(lr=self.lr, beta_1=self.beta_1, beta_2=self.beta_2,
+                              epsilon=self.optimizer_epsilon)
+
+        # Create multi-GPU version of model if GPUs > 1
+        if self.num_gpu > 1:
+            self.keras_model = ModelMGPU(self.keras_model, self.num_gpu)
+
+        # Compile model
+        self.keras_model.compile(loss=self.loss_func, optimizer=self.optimizer, metrics=self.metrics)
+
         return None
 
     def model(self):
@@ -262,7 +322,11 @@ class BaseModel(object):
                                   decay=0.0)
 
         if self.keras_model is None:
+
             self.keras_model = self.model()
+            if self.num_gpu > 1:
+                self.keras_model = ModelMGPU(self.keras_model, self.num_gpu)
+
             self.keras_model.compile(loss=self.loss_func, optimizer=self.optimizer, metrics=self.metrics,
                                      loss_weights=None)
 
@@ -271,7 +335,7 @@ class BaseModel(object):
     def save_model_parameters(self, path):
 
         if os.path.exists(path):
-            print('Model parameter file already exists. Skipping...')
+            print('[INFO] Model parameter file already exists. Skipping...')
         else:
             data = {'id': self.__class__.__name__ if self._model_identifier is None else self._model_identifier,
                     'pool_length': self.pool_length,
@@ -317,6 +381,12 @@ class BaseModel(object):
         self.hyper_txt.write("Number of Validation Data: {:d} \n".format(int(self.val_size * self.num_train)))
 
     def pre_training_checklist(self):
+
+        print('[INFO] # CPUs: {}'.format(multiprocessing.cpu_count()))
+        print("[INFO] training with {} GPU...".format(self.num_gpu))
+
+        # Ensure batch size is increased if using multiple GPUs (each GPU will get self.batch_size number of spectra)
+        self.batch_size = self.batch_size * self.num_gpu if self.num_gpu > 1 else self.batch_size
 
         # Compile the model
         self.compile_model()
@@ -375,7 +445,7 @@ class BaseModel(object):
         ### Create callbacks ###
         # A callback for saving the current best model during training
         filepath = os.path.join(self.fullfilepath, "weights.best.h5")
-        print('Best model will be saved to: %s' % filepath)
+        print('[INFO] Best model will be saved to: %s' % filepath)
         checkpoint = CustomModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True,
                                            mode='min', save_weights_only=False)
 
@@ -402,12 +472,12 @@ class BaseModel(object):
 
         # Save model parameters
         model_parameter_filepath = os.path.join(self.fullfilepath, self.model_parameter_filename)
-        print('Saving model parameters to: %s' % model_parameter_filepath)
+        print('[INFO] Saving model parameters to: %s' % model_parameter_filepath)
         self.save_model_parameters(model_parameter_filepath)
 
         # Save hyperparameters
         hyperparameter_filepath = os.path.join(self.fullfilepath, 'hyperparameter.txt')
-        print('Saving model parameters to: %s' % hyperparameter_filepath)
+        print('[INFO] Saving model hyperparameters to: %s' % hyperparameter_filepath)
         self.save_hyperparameters(hyperparameter_filepath)
 
         return None
@@ -421,7 +491,8 @@ class BaseModel(object):
         print(model_savename + ' saved to {:s}'.format(save_path))
 
     def train(self):
-        # Call the checklist to create folder and save parameters
+
+        # Call the pre-training checklist
         self.pre_training_checklist()
 
         start_time = time.time()
@@ -435,7 +506,9 @@ class BaseModel(object):
             validation_steps = len(self.val_idx) // self.batch_size
 
         cpus = multiprocessing.cpu_count()
-        workers = cpus - 1 if cpus > 1 else 1
+        workers = cpus - 2 if cpus > 2 else 1
+        max_q = 10 if workers < 10 else workers
+
         self.history = self.keras_model.fit_generator(generator=self.training_generator,
                                                       steps_per_epoch=steps_per_epoch,
                                                       validation_data=self.validation_generator,
@@ -444,6 +517,7 @@ class BaseModel(object):
                                                       verbose=self.verbose,
                                                       workers=workers,
                                                       callbacks=self.callbacks,
+                                                      max_q_size=max_q,
                                                       use_multiprocessing=self.use_multiprocessing)
         end_time = time.time()
         total_time = end_time - start_time
