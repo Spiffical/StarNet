@@ -9,14 +9,14 @@ A script has been provided [(`starnet/train_StarNet.py`)](https://github.com/Spi
 
 ```
 python /path/to/starnet/train_StarNet.py \
---datafile_path /path/to/training_dataset.h5 \
+--data_path /path/to/training_dataset.h5 \
 --num_train 50000 \
 --targets teff logg M_H a_M \
 --spec_key spectra_starnetnorm \
 --save_folder results_stored_here/ \
 --batch_size 32 \
 --epochs 35 \
---model_to_train StarNet2017
+--model_type StarNet2017
 ```
 
 NOTE: the `--targets` and `--spec_key` arguments expect the keywords that are used in your `training_dataset.h5` file to store the training labels and training features, respectively.
