@@ -2,18 +2,17 @@ import os, sys
 sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import numpy as np
 import time
-import warnings
 import random
 import glob
 import h5py
 import argparse
 import uuid
+import multiprocessing
+from contextlib import contextmanager
 
-from starnet.data.utilities.data_augmentation import continuum_normalize_parallel, \
-     modify_spectra_parallel, rebin
-from utils import get_synth_spec_data, ensure_constant_sampling, get_synth_wavegrid
-
-warnings.filterwarnings('ignore')
+from starnet.utils.data_utils.restructure_spectrum import continuum_normalize_parallel, rebin
+from starnet.utils.data_utils.augment import convolve_spectrum, add_radial_velocity, add_noise, fastRotBroad
+from starnet.utils.compute_canada_utils import get_synth_spec_data, ensure_constant_sampling, get_synth_wavegrid
 
 # Define parameters needed for continuum fitting
 LINE_REGIONS = [[4210, 4240], [4250, 4410], [4333, 4388], [4845, 4886], [5160, 5200], [5874, 5916], [6530, 6590]]
@@ -61,6 +60,77 @@ def parse_args():
     return parser.parse_args()
 
 
+def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=20000):
+    """
+
+    :param flux: an array of flux values
+    :param wav: synthetic wavelength grid
+    :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
+    :param rot: value of rotational velocity (km/s) to apply to flux array
+    :param noise: value of noise (fraction of flux value) to apply to flux array
+    :param vrad: value of radial velocity (km/s) to apply to flux array
+    :param to_res: resolution of output flux array requested
+
+    :return: modified flux array
+    """
+    # Degrade resolution
+    err = np.zeros(len(flux))
+    _, flux, _ = convolve_spectrum(wav, flux, err, to_resolution=to_res)
+
+    # Apply rotational broadening
+    if rot != 0:
+        epsilon = random.uniform(0, 1.)
+        flux = fastRotBroad(wav, flux, epsilon, rot)
+
+    # Add radial velocity
+    if vrad != 0:
+        rv_wav = add_radial_velocity(wav, vrad)
+    flux = rebin(rv_wav, wav, flux)
+
+    # Rebin to new wave grid
+    flux = rebin(new_wav, wav, flux)
+
+    # Add noise
+    flux = add_noise(flux, noise)
+
+    return flux
+
+
+def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_list, instrument_res):
+    """
+    Augments (in parallel) a list of spectra with rotational velocity, radial velocity, noise, and resolution
+    degradation.
+
+    :param spectra: list of spectra
+    :param wav: synthetic wavelength grid
+    :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
+    :param vrot_list: a list, same length as spectra list, of rotational velocities (km/s) to apply
+    :param noise_list: a list, same length as spectra list, of maximum noise (fraction of flux) to apply
+    :param vrad_list: a list, same length as spectra list, of radial velocities (km/s) to apply
+    :param instrument_res: instrumental resolution to degrade the synthetic spectra to
+
+    :return: a list of modified input spectra
+    """
+
+    @contextmanager
+    def poolcontext(*args, **kwargs):
+        pool = multiprocessing.Pool(*args, **kwargs)
+        yield pool
+        pool.terminate()
+
+    num_spectra = np.shape(spectra)[0]
+    num_cpu = multiprocessing.cpu_count()
+    pool_size = num_cpu if num_spectra >= num_cpu else num_spectra
+    print('[INFO] Pool size: {}'.format(pool_size))
+
+    pool_arg_list = [(spectra[i], wav, new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
+                     for i in range(num_spectra)]
+    with poolcontext(processes=pool_size) as pool:
+        results = pool.starmap(augment_spectrum, pool_arg_list)
+
+    return results
+
+
 def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, batch_size=32, max_vrot=70, max_vrad=200,
                    max_noise=0.07, spectral_grid_name='phoenix', max_teff=np.Inf, min_teff=-np.Inf,
                    max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf):
@@ -85,10 +155,12 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
     wave_indices = (wave_grid_synth > wave_min_request) & (wave_grid_synth < wave_max_request)
     wvl = wave_grid_synth[wave_indices]
 
-    # Collect data for batch_size number of raw synthetic spectra
+    # This next block of code will iteratively select a random file from the supplied list of synthetic spectra files,
+    # extract the flux and stellar parameters from it, and if it falls within the requested parameter space, will
+    # append the data to the list of spectra to be modified. It will repeat until the requested batch size has been met.
     t1 = time.time()
     while np.shape(spectra)[0] < batch_size:
-        # Randomly collect a batch from the dataset
+        # Randomly collect a file from the whole list of synthetic spectra files
         batch_index = random.choice(range(0, len(file_list)))
         batch_file = file_list[batch_index]
 
@@ -118,9 +190,9 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
     t2 = time.time()
     print('Time taken to collect spectra: %.1f s' % (t2 - t1))
 
-    # First make sure the wavelength array is evenly sampled.
+    # First make sure the wavelength array has a constant sampling.
     constant_sampling_wvl = ensure_constant_sampling(wvl)
-    if constant_sampling_wvl != wvl:
+    if not np.all(constant_sampling_wvl == wvl):
         for i, spec in enumerate(spectra):
             mod_spec = rebin(constant_sampling_wvl, wvl, spec)
             spectra[i] = mod_spec
@@ -128,7 +200,7 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
 
     # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)
     t1 = time.time()
-    spectra = modify_spectra_parallel(spectra, wvl, wave_grid_obs, vrot_list, noise_list, vrad_list,
+    spectra = augment_spectra_parallel(spectra, wvl, wave_grid_obs, vrot_list, noise_list, vrad_list,
                                       instrument_res)
     print('Total modify time: %.1f s' % (time.time() - t1))
 
@@ -162,7 +234,6 @@ def main():
         file_extension = 'fits'
     elif grid_name == 'ambre':
         file_extension = 'AMBRE'
-
     file_list = glob.glob(os.path.join(args.spec_dir, '*.{}'.format(file_extension)))
 
     # Get observational wavelength grid (stored in saved numpy array)
