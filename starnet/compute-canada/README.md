@@ -15,7 +15,7 @@ python /path/to/starnet/compute-canada/create_trainStarNet_jobscript.py \
 --zeros 0.10 \
 --telluric_file /path/to/starnet/data/telluric_lines.txt \
 --finetune_model weights.best.h5 \
---model_to_train StarNet2017 
+--model_type StarNet2017 
 ```
 
 Once this job script is created, you can then run `queue_cc.py` from [compute-canada-goodies](https://github.com/vcg-uvic/compute-canada-goodies)
