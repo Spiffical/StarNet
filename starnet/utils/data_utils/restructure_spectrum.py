@@ -223,3 +223,31 @@ def continuum_normalize_parallel(spectra, line_regions, wav, segments_step=10, f
     norm_fluxes = [result[0] for result in results]
 
     return norm_fluxes
+
+
+def ensure_constant_sampling(wav):
+    """
+    This function will check if the wavelength array is evenly sampled, and modify it to be evenly sampled
+    if not already.
+
+    :param wav: Wavelength array
+    :return: Evenly sampled wavelength array
+    """
+
+    sp = wav[1::] - wav[0:-1]
+    sp = np.append(abs(wav[0] - wav[1]), sp)
+    sp = sp.round(decimals=5)
+
+    unique_vals, ind, counts = np.unique(sp, return_index=True, return_counts=True)
+
+    if len(unique_vals) > 1:  # Wavelength array is sampled differently throughout
+
+        # Rebin fluxes to the coarsest sampling found in the wavelength grid
+        coarsest_sampling = max(unique_vals[counts > 1])
+        new_wave_grid = np.arange(wav[0], wav[-1], coarsest_sampling)
+
+        wav = new_wave_grid
+    else:
+        print('Wavelength array already has constant sampling! Returning same wavelength grid')
+
+    return wav
