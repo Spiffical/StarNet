@@ -10,9 +10,9 @@ import uuid
 import multiprocessing
 from contextlib import contextmanager
 
-from starnet.utils.data_utils.restructure_spectrum import continuum_normalize_parallel, rebin
+from starnet.utils.data_utils.restructure_spectrum import continuum_normalize_parallel, rebin, ensure_constant_sampling
 from starnet.utils.data_utils.augment import convolve_spectrum, add_radial_velocity, add_noise, fastRotBroad
-from starnet.utils.compute_canada_utils import get_synth_spec_data, ensure_constant_sampling, get_synth_wavegrid
+from starnet.utils.data_utils.loading import get_synth_wavegrid, get_synth_spec_data
 
 # Define parameters needed for continuum fitting
 LINE_REGIONS = [[4210, 4240], [4250, 4410], [4333, 4388], [4845, 4886], [5160, 5200], [5874, 5916], [6530, 6590]]
