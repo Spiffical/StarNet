@@ -1,54 +1,65 @@
 import numpy as np
 import h5py
 import random
+import os
+from astropy.io import fits as pyfits
 
-# Define edges of APOGEE detectors
-beginSpecBlue = 322
-endSpecBlue = 3242
-beginSpecGreen = 3648
-endSpecGreen = 6048   
-beginSpecRed = 6412
-endSpecRed = 8306
 
-    
 class load_data_from_h5(object):
 
-    def __init__(self, data_file, specname, targetname, indices=None, mu_std=None):
+    def __init__(self, data_file, spec_name, target_name, wave_grid_key=None, noise_key=None, start_indx=None,
+                 end_indx=None, mu=None, sigma=None):
 
-        F = h5py.File(data_file, 'r')
+        self.data_file = data_file
+        self.mu = mu
+        self.sigma = sigma
+        self.wave_grid_key = wave_grid_key
+        self.noise_key = noise_key
+        self.spec_name = spec_name
+        self.target_name = target_name
+        self.start_indx = start_indx
+        self.end_indx = end_indx
 
+        self.X = None
+        self.y = None
+        self.normed_y = None
+        self.noise = None
+        self.wave_grid = None
 
-        if indices is not None:
-            indices = indices.tolist()
-            X = F[specname][indices]
-            y = [F[target][indices] for target in targetname]
-            try:
-                noise = F['noise'][indices]
-            except:
-                noise = None
-        else:
-            X = F[specname][:]
-            y = [F[target][:] for target in targetname]
-               
-        self.y = np.stack(y, axis=1)
-        self.X = X
-        self.noise = noise
-        try:
-            self.wave_grid = F['wave_grid'][:]
-        except:
-            self.wave_grid = None
+        self.load()
 
-            self.normed_y = self.normalize(self.y)
-        else:
-            self.normed_y = None
+    def load(self):
+
+        with h5py.File(self.data_file, 'r') as f:
+            if self.start_indx is not None and self.end_indx is not None:
+                self.X = f[self.spec_name][self.start_indx:self.end_indx]
+                y = [f[target][self.start_indx:self.end_indx] for target in self.target_name]
+                if self.noise_key is not None:
+                    self.noise = f[self.noise_key][self.start_indx:self.end_indx]
+            else:  # Load entire dataset
+                self.X = f[self.spec_name][:]
+                y = [f[target][:] for target in self.target_name]
+                if self.noise_key is not None:
+                    self.noise = f[self.noise_key][:]
+
+            self.y = np.stack(y, axis=1)
+
+            if self.wave_grid_key is not None:
+                self.wave_grid = f[self.wave_grid_key][:]
+
+            if self.mu is not None and self.sigma is not None:
+                self.normed_y = self.normalize(self.y, self.mu, self.sigma)
+
+    @staticmethod
+    def normalize(data, mu, sigma):
         
-    def normalize(self, data):
+        return (data-mu)/sigma
+
+    @staticmethod
+    def denormalize(data, mu, sigma):
         
-        return (data-self.mu)/self.sigma
-            
-    def denormalize(self, data):
-        
-        return ((data*self.sigma)+self.mu)
+        return (data*sigma)+mu
+
     
 # ['spectrum', 'teff', 'logg', 'M_H', 'a_M', 'C_M', 'N_M']
 class load_data_from_h5turbospec(object):
@@ -132,6 +143,7 @@ def load_contiguous_slice_from_h5(data_path, start_indx, end_indx, spec_name='',
 
         if (mu is not None) and (sigma is not None):
             # Normalize labels
+            print('[INFO] Normalizing labels...')
             y = (y - mu) / sigma
 
     return X, y
@@ -175,7 +187,7 @@ def load_batch_from_vmh5batch(data_file, targetname=['teff', 'logg', 'M_H'], mu_
         return X, normed_y
 
 
-def get_synth_wavegrid(grid_name, synth_wave_filepath):
+def get_synth_wavegrid(file_path, grid_name='intrigoss'):
     """
     This function will grab the wavelength grid of the synthetic spectral grid you're working with.
 
@@ -187,11 +199,11 @@ def get_synth_wavegrid(grid_name, synth_wave_filepath):
 
     if grid_name == 'intrigoss':
         # For INTRIGOSS spectra, the wavelength array is stored in the same file as the spectra
-        hdulist = pyfits.open(synth_wave_filepath)
+        hdulist = pyfits.open(file_path)
         wave_grid_synth = hdulist[1].data['wavelength']
     elif grid_name == 'phoenix':
         # For Phoenix spectra, the wavelength array is stored in a separate file
-        hdulist = pyfits.open(synth_wave_filepath)
+        hdulist = pyfits.open(file_path)
         wave_grid_synth = hdulist[0].data
 
         # For Phoenix, need to convert from vacuum to air wavelengths.
@@ -206,7 +218,7 @@ def get_synth_wavegrid(grid_name, synth_wave_filepath):
         print('vac: {}, air: {}'.format(vac, air))
     elif grid_name == 'ambre':
         # TODO: finish this section
-        wave_grid_synth = np.genfromtxt(synth_wave_filepath, usecols=0)
+        wave_grid_synth = np.genfromtxt(file_path, usecols=0)
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
                          '(phoenix, intrigoss, or ambre)'.format(grid_name))
