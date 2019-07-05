@@ -1,7 +1,7 @@
 from keras import layers as ll
 from keras.layers import Input, Dense, Activation
 from keras.layers.convolutional import Conv1D, ZeroPadding1D
-from keras.initializers import glorot_uniform
+from keras.initializers import glorot_uniform, glorot_normal
 from keras.layers.normalization import BatchNormalization
 
 """
@@ -38,19 +38,19 @@ def identity_block(input_tensor, kernel_size, filters, stage, block):
 
     # First component of main path
     x = Conv1D(filters=filters1, kernel_size=1, strides=1, padding='valid', name=conv_name_base + '2a',
-               kernel_initializer=glorot_uniform(seed=0))(input_tensor)
+               kernel_initializer=glorot_normal(seed=0))(input_tensor)
     x = BatchNormalization(name=bn_name_base + '2a')(x)
     x = Activation('relu')(x)
 
     # Second component of main path
     x = Conv1D(filters=filters2, kernel_size=kernel_size, strides=1, padding='same', name=conv_name_base + '2b',
-               kernel_initializer=glorot_uniform(seed=0))(x)
+               kernel_initializer=glorot_normal(seed=0))(x)
     x = BatchNormalization(name=bn_name_base + '2b')(x)
     x = Activation('relu')(x)
 
     # Third component of main path
     x = Conv1D(filters=filters3, kernel_size=1, strides=1, padding='valid', name=conv_name_base + '2c',
-               kernel_initializer=glorot_uniform(seed=0))(x)
+               kernel_initializer=glorot_normal(seed=0))(x)
     x = BatchNormalization(name=bn_name_base + '2c')(x)
 
     # Final step: Add shortcut value to main path, and pass it through a ReLU activation
@@ -89,24 +89,24 @@ def conv_block(input_tensor, kernel_size, filters, stage, block, s=2):
     ##### MAIN PATH #####
     # First component of main path
     x = Conv1D(filters1, 1, strides=s, name=conv_name_base + '2a',
-               kernel_initializer=glorot_uniform(seed=0))(input_tensor)
+               kernel_initializer=glorot_normal(seed=0))(input_tensor)
     x = BatchNormalization(name=bn_name_base + '2a')(x)
     x = Activation('relu')(x)
 
     # Second component of main path
     x = Conv1D(filters=filters2, kernel_size=kernel_size, strides=1, padding='same', name=conv_name_base + '2b',
-               kernel_initializer=glorot_uniform(seed=0))(x)
+               kernel_initializer=glorot_normal(seed=0))(x)
     x = BatchNormalization(name=bn_name_base + '2b')(x)
     x = Activation('relu')(x)
 
     # Third component of main path
     x = Conv1D(filters=filters3, kernel_size=1, strides=1, padding='valid', name=conv_name_base + '2c',
-               kernel_initializer=glorot_uniform(seed=0))(x)
+               kernel_initializer=glorot_normal(seed=0))(x)
     x = BatchNormalization(name=bn_name_base + '2c')(x)
 
     ##### SHORTCUT PATH ####
     x_shortcut = Conv1D(filters=filters3, kernel_size=1, strides=s, padding='valid', name=conv_name_base + '1',
-                        kernel_initializer=glorot_uniform(seed=0))(x_shortcut)
+                        kernel_initializer=glorot_normal(seed=0))(x_shortcut)
     x_shortcut = BatchNormalization(name=bn_name_base + '1')(x_shortcut)
 
     # Final step: Add shortcut value to main path, and pass it through a ReLU activation

@@ -12,10 +12,13 @@ class CustomModelCheckpoint(Callback):
     This function now reads any available training log for the validation loss 
     history and acquires the lowest loss. When fine-tuning or re-training a model, 
     this is important so that the best model weights are not overwritten when this 
-    function is initialized.
+    function is initialized. Also added support for checkpointing a multi-GPU model,
+    which requires passing in the serial version of the model being trained.
     
     # Arguments
         filepath: string, path to save the model file.
+        serial_model: a Keras model (if training with multiple GPUs, this needs to be the serial model
+                      that hasn't been wrapped with multi_gpu_model())
         monitor: quantity to monitor.
         verbose: verbosity mode, 0 or 1.
         save_best_only: if `save_best_only=True`,
@@ -35,18 +38,20 @@ class CustomModelCheckpoint(Callback):
         period: Interval (number of epochs) between checkpoints.
     """
 
-    def __init__(self, filepath, monitor='val_loss', verbose=0,
+    def __init__(self, filepath, serial_model, monitor='val_loss', verbose=0,
                  save_best_only=False, save_weights_only=False,
                  mode='auto', period=1):
         super(CustomModelCheckpoint, self).__init__()
         self.monitor = monitor
         self.verbose = verbose
         self.filepath = filepath
+        self.serial_model = serial_model
         self.save_best_only = save_best_only
         self.save_weights_only = save_weights_only
         self.period = period
         self.epochs_since_last_save = 0
         self.save_dir = os.path.dirname(filepath)
+
 
         if mode not in ['auto', 'min', 'max']:
             warnings.warn('ModelCheckpoint mode %s is unknown, '
@@ -82,7 +87,6 @@ class CustomModelCheckpoint(Callback):
                 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        num_outputs = len(self.model.outputs)
         self.epochs_since_last_save += 1
         if self.epochs_since_last_save >= self.period:
             self.epochs_since_last_save = 0
@@ -102,10 +106,10 @@ class CustomModelCheckpoint(Callback):
                         self.best = current
                         if self.save_weights_only:
                             #self.model.layers[-(num_outputs + 1)].save_weights(filepath, overwrite=True)
-                            self.model.save_weights(filepath, overwrite=True)
+                            self.serial_model.save_weights(filepath, overwrite=True)
                         else:
                             #self.model.layers[-(num_outputs + 1)].save(filepath, overwrite=True)
-                            self.model.save(filepath, overwrite=True)
+                            self.serial_model.save(filepath, overwrite=True)
                     else:
                         if self.verbose > 0:
                             print('\nEpoch %05d: %s did not improve from %0.5f' %
@@ -115,10 +119,10 @@ class CustomModelCheckpoint(Callback):
                     print('\nEpoch %05d: saving model to %s' % (epoch + 1, filepath))
                 if self.save_weights_only:
                     #self.model.layers[-(num_outputs + 1)].save_weights(filepath, overwrite=True)
-                    self.model.save_weights(filepath, overwrite=True)
+                    self.serial_model.save_weights(filepath, overwrite=True)
                 else:
                     #self.model.layers[-(num_outputs + 1)].save(filepath, overwrite=True)
-                    self.model.save(filepath, overwrite=True)
+                    self.serial_model.save(filepath, overwrite=True)
 
 
 class VirutalCSVLogger(Callback):
