@@ -9,6 +9,19 @@ class load_data_from_h5(object):
 
     def __init__(self, data_file, spec_name, target_name, wave_grid_key=None, noise_key=None, start_indx=None,
                  end_indx=None, mu=None, sigma=None):
+        """
+        Creates a data object containing spectra, normalized and non-normalized spectra properties
+        (e.g. teff, logg, noise, etc), and the wavelength grid
+        :param data_file: (string) Path of the h5 file
+        :param spec_name: (string) h5 key used to access the spectra
+        :param target_name: (list of strings) h5 keys used to access the spectra labels
+        :param wave_grid_key: (string) h5 key used to access the wavelength grid
+        :param noise_key: (string) h5 key used to access the noise data
+        :param start_indx: (int) the beginning index used for slicing the data
+        :param end_indx: (int) the end index used for slicing the data
+        :param mu: (list) mean of the targets, used for normalization
+        :param sigma: (list) std. dev. of the targets, used for normalization
+        """
 
         self.data_file = data_file
         self.mu = mu
@@ -49,6 +62,8 @@ class load_data_from_h5(object):
 
             if self.mu is not None and self.sigma is not None:
                 self.normed_y = self.normalize(self.y, self.mu, self.sigma)
+            else:
+                print('only non-normalized labels will be returned!')
 
     @staticmethod
     def normalize(data, mu, sigma):
@@ -191,8 +206,8 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
     """
     This function will grab the wavelength grid of the synthetic spectral grid you're working with.
 
+    :param file_path: the path of the file which contains the wavelength grid
     :param grid_name: either phoenix, intrigoss, or ambre
-    :param synth_wave_filepath: the path of the file which contains the wavelength grid
 
     :return: Wavelength grid
     """
@@ -237,7 +252,7 @@ def get_synth_spec_data(file_path, grid_name='phoenix'):
     :return: flux and stellar parameters of spectrum file
     """
 
-    if grid_name == 'phoenix':
+    if grid_name.lower() == 'phoenix':
         with pyfits.open(file_path) as hdulist:
             flux = hdulist[0].data
             param_data = hdulist[0].header
@@ -247,7 +262,7 @@ def get_synth_spec_data(file_path, grid_name='phoenix'):
             a_m = param_data['PHXALPHA']
             vt = param_data['PHXXI_L']
             params = [teff, logg, m_h, a_m, vt]
-    elif grid_name == 'intrigoss':
+    elif grid_name.lower() == 'intrigoss':
         with pyfits.open(file_path) as hdulist:
             flux = hdulist[1].data['surface_flux']
             param_data = hdulist[0].header
@@ -257,13 +272,34 @@ def get_synth_spec_data(file_path, grid_name='phoenix'):
             a_m = param_data['ALPHA']
             vt = param_data['VT']
             params = [teff, logg, m_h, a_m, vt]
-    elif grid_name == 'ambre':
-        # TODO: finish this
-        flux = np.genfromtxt(file_path, usecols=2)
+    elif grid_name.lower() == 'ambre':
 
-        # The filename can be used to acquire the stellar parameters
         filename = os.path.basename(file_path)
 
+        teff = float(filename[1:5])
+        if filename[7] == '-':
+            logg = -1 * float(filename[8:11])
+        else:
+            logg = float(filename[8:11])
+
+        vt = float(filename[18:20])
+
+        if filename[22] == '-':
+            m_h = -1 * float(filename[23:27])
+        else:
+            m_h = float(filename[23:27])
+
+        if filename[29] == '-':
+            a_m = -1 * float(filename[30:34])
+        else:
+            a_m = float(filename[30:34])
+
+        params = [teff, logg, m_h, a_m, vt]
+
+        flux = np.genfromtxt(file_path, usecols=-1)
+    else:
+        raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
+                         '(phoenix, intrigoss, or ambre)'.format(grid_name))
 
     return flux, params
 
