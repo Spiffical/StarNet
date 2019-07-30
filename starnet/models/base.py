@@ -419,10 +419,19 @@ class BaseModel(object):
             with open(training_log_path, mode='r') as csv_file:
                 csv_reader = csv.DictReader(csv_file)
                 learning_rates = []
+                val_losses = []
                 for row in csv_reader:
                     learning_rates.append(float(row['lr']))
+                    val_losses.append(float(row['val_loss']))
                 if not np.isnan(learning_rates).all():  # Don't try to find min if all NaNs
-                    self.lr = np.nanmin(learning_rates)
+                    min_lr = np.nanmin(learning_rates)
+                    # If validation loss hasn't decreased in N = reduce_lr_patience epochs, then
+                    # halve the learning rate. Otherwise, use the lowest learning rate.
+                    if not np.any(val_losses[-self.reduce_lr_patience:] <= min_lr):
+                        lr = min_lr / 2.
+                    else:
+                        lr = min_lr
+                    self.lr = lr
                 print('[LOAD MODEL] Last learning rate of lr={} collected from: {}'.format(self.lr,
                                                                                            training_log_path))
 
@@ -431,13 +440,17 @@ class BaseModel(object):
                               epsilon=self.optimizer_epsilon)
 
         # Load model weights
-        with tf.device('/cpu:0'):
-            model = self.model()
-            model.load_weights(model_path)
-            self.keras_model = model
+        #with tf.device('/cpu:0'):
+        model = self.model()
+        model.load_weights(model_path)
+        self.keras_model = model
 
         # Create multi-GPU version of model if GPUs > 1
         if self.num_gpu > 1:
+            with tf.device('/cpu:0'):
+                model = self.model()
+                model.load_weights(model_path)
+                self.keras_model = model
             self.mgpu_keras_model = multi_gpu_model(self.keras_model, self.num_gpu)
 
         return None
