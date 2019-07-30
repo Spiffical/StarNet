@@ -2,16 +2,18 @@ import argparse
 import os
 import numpy as np
 
-VIRTUAL_ENV = 'py36'
 HOME_DIR = os.getenv('HOME')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--output_path', type=str, default='./jobs/todo/submit_job.sh',
                     help='Path of training file')
 parser.add_argument('--spec_dir', type=str, required=True,
-                        help='location where raw spectra are stored')
-parser.add_argument('--script', type=str, required=True,
-                        help='path to spectra processing python script')
+                    help='location where raw spectra are stored')
+parser.add_argument('--script', type=str, required=True, default=os.path.join(HOME_DIR,
+                                                                              'StarNet/scripts/process_spectra_cc.py'),
+                    help='path to spectra processing python script')
+parser.add_argument('--virtual_env', type=str, required=True,
+                    help='Name of the virtual environment to use')
 parser.add_argument('--save_dir', type=str, required=True,
                     help='temporary location where processed spectra will be saved')
 parser.add_argument('--obs_wave_file', type=str, required=True,
@@ -46,12 +48,17 @@ parser.add_argument('--max_feh', type=float, default=np.Inf,
                     help='maximum [Fe/H]')
 parser.add_argument('--min_feh', type=float, default=-np.Inf,
                     help='minimum [Fe/H]')
+parser.add_argument('--max_afe', type=float, default=np.Inf,
+                        help='maximum [alpha/Fe]')
+parser.add_argument('--min_afe', type=float, default=-np.Inf,
+                    help='minimum [alpha/Fe]')
 args = parser.parse_args()
 
 output_path = args.output_path
 processing_script = args.script
 spec_dir = args.spec_dir
 max_num_spec = args.max_num_spec
+virtual_env = args.virtual_env
 spectral_grid_name = args.grid
 save_dir = args.save_dir
 wave_grid_obs_file = args.obs_wave_file
@@ -67,18 +74,23 @@ max_logg = args.max_logg
 min_logg = args.min_logg
 max_feh = args.max_feh
 min_feh = args.min_feh
+max_feh = args.max_feh
+min_feh = args.min_feh
+max_afe = args.max_afe
+min_afe = args.min_afe
 
 
-def write_job_file(output_path, script_path, spec_dir, save_dir, wave_grid_obs_file, wave_grid_synth_file,
+def write_job_file(output_path, script_path, spec_dir, save_dir, virtual_env, wave_grid_obs_file, wave_grid_synth_file,
                    spectral_grid_name='phoenix', instrument_res=47000, max_num_spec=5000, batch_size=32,
                    max_vrad=5, max_vrot=70, max_noise=0.07, max_teff=np.Inf, min_teff=-np.Inf,
-                   max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf):
+                   max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf, max_afe=np.Inf,
+                   min_afe=-np.Inf):
 
     print('Writing file to {}'.format(output_path))
     with open(output_path, 'w') as writer:
         writer.write('#!/bin/bash\n')
         writer.write('module load python/3.6\n')
-        writer.write('source {}\n'.format(os.path.join(HOME_DIR, VIRTUAL_ENV, 'bin/activate')))
+        writer.write('source {}\n'.format(os.path.join(HOME_DIR, virtual_env, 'bin/activate')))
         writer.write('\n\n')
         writer.write('python {} \\\n'.format(script_path))
         writer.write('--spec_dir %s \\\n' % spec_dir)
@@ -104,6 +116,10 @@ def write_job_file(output_path, script_path, spec_dir, save_dir, wave_grid_obs_f
             writer.write('--max_feh %s \\\n' % max_feh)
         if min_feh != -np.Inf:
             writer.write('--min_feh %s' % min_feh)
+        if max_afe != np.Inf:
+            writer.write('--max_afe %s \\\n' % max_feh)
+        if min_afe != -np.Inf:
+            writer.write('--min_afe %s' % min_feh)
 
 
 if args.num_jobs > 1:
@@ -112,10 +128,12 @@ if args.num_jobs > 1:
             if output_path.endswith(".sh"):
                     output_path_temp = output_path[:-3]
             output_path_temp += '_{}.sh'.format(i)
-            write_job_file(output_path_temp, processing_script, spec_dir, save_dir, wave_grid_obs_file,
+            write_job_file(output_path_temp, processing_script, spec_dir, save_dir, virtual_env, wave_grid_obs_file,
                            wave_grid_synth_file, spectral_grid_name, instrument_res, max_num_spec, batch_size,
-                           max_vrad, max_vrot, max_noise, max_teff, min_teff, max_logg, min_logg, max_feh, min_feh)
+                           max_vrad, max_vrot, max_noise, max_teff, min_teff, max_logg, min_logg, max_feh, min_feh,
+                           max_afe, min_afe)
 else:
-    write_job_file(output_path, processing_script, spec_dir, save_dir, wave_grid_obs_file, wave_grid_synth_file,
-                   spectral_grid_name, instrument_res, max_num_spec, batch_size, max_vrad, max_vrot, max_noise, max_teff,
-                   min_teff,  max_logg, min_logg, max_feh, min_feh)
+    write_job_file(output_path, processing_script, spec_dir, save_dir, virtual_env, wave_grid_obs_file,
+                   wave_grid_synth_file, spectral_grid_name, instrument_res, max_num_spec, batch_size, max_vrad,
+                   max_vrot, max_noise, max_teff, min_teff,  max_logg, min_logg, max_feh, min_feh, max_afe,
+                   min_afe)
