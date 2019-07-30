@@ -55,6 +55,10 @@ def parse_args():
                         help='maximum [Fe/H]')
     parser.add_argument('--min_feh', type=float, default=-np.Inf,
                         help='minimum [Fe/H]')
+    parser.add_argument('--max_afe', type=float, default=np.Inf,
+                        help='maximum [alpha/Fe]')
+    parser.add_argument('--min_afe', type=float, default=-np.Inf,
+                        help='minimum [alpha/Fe]')
 
     # Collect arguments
     return parser.parse_args()
@@ -85,7 +89,7 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     # Add radial velocity
     if vrad != 0:
         rv_wav = add_radial_velocity(wav, vrad)
-        flux = rebin(rv_wav, wav, flux)
+        #flux = rebin(rv_wav, wav, flux)
         wav = rv_wav
 
     # Rebin to new wave grid
@@ -134,7 +138,8 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
 
 def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, batch_size=32, max_vrot=70, max_vrad=200,
                    max_noise=0.07, spectral_grid_name='phoenix', max_teff=np.Inf, min_teff=-np.Inf,
-                   max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf):
+                   max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf, max_afe=np.Inf,
+                   min_afe=-np.Inf):
 
     # Initialize lists
     spectra = []
@@ -171,7 +176,7 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
 
         # Skip this spectrum if beyond requested temperature, logg, or metallicity limits
         if (teff > max_teff) or (teff < min_teff) or (logg > max_logg) or (logg < min_logg) or \
-                (m_h > max_feh) or (m_h < min_feh):
+                (m_h > max_feh) or (m_h < min_feh) or (a_m > max_afe) or (a_m < min_afe):
             continue
         else:
             vrad = random.uniform(-max_vrad, max_vrad)  # km/s
@@ -247,7 +252,7 @@ def main():
     if grid_name == 'intrigoss' or grid_name == 'ambre':
         synth_wave_filename = file_list[0]
     elif grid_name == 'phoenix':
-        if args.synth_wave_file is None:
+        if args.synth_wave_file is None or args.synth_wave_file.lower() == 'none':
             raise ValueError('for Phoenix grid, need to supply separate file containing wavelength grid')
         else:
             synth_wave_filename = args.synth_wave_file
