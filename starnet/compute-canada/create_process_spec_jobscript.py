@@ -115,7 +115,7 @@ def write_job_file(output_path, script_path, spec_dir, save_dir, virtual_env, wa
         if max_feh != np.Inf:
             writer.write('--max_feh %s \\\n' % max_feh)
         if min_feh != -np.Inf:
-            writer.write('--min_feh %s' % min_feh)
+            writer.write('--min_feh %s \\\n' % min_feh)
         if max_afe != np.Inf:
             writer.write('--max_afe %s \\\n' % max_feh)
         if min_afe != -np.Inf:
