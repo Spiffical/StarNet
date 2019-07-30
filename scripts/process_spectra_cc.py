@@ -89,7 +89,7 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     # Add radial velocity
     if vrad != 0:
         rv_wav = add_radial_velocity(wav, vrad)
-        #flux = rebin(rv_wav, wav, flux)
+        flux = rebin(rv_wav, wav, flux)
         wav = rv_wav
 
     # Rebin to new wave grid
