@@ -212,11 +212,12 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
     :return: Wavelength grid
     """
 
-    if grid_name == 'intrigoss':
+
+    if grid_name.lower() == 'intrigoss':
         # For INTRIGOSS spectra, the wavelength array is stored in the same file as the spectra
         hdulist = pyfits.open(file_path)
         wave_grid_synth = hdulist[1].data['wavelength']
-    elif grid_name == 'phoenix':
+    elif grid_name.lower() == 'phoenix':
         # For Phoenix spectra, the wavelength array is stored in a separate file
         hdulist = pyfits.open(file_path)
         wave_grid_synth = hdulist[0].data
@@ -231,9 +232,12 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
                 1.0 + 2.735182E-4 + 131.4182 / wave_grid_synth ** 2 + 2.76249E8 / wave_grid_synth ** 4)
         air = wave_grid_synth[0]
         print('vac: {}, air: {}'.format(vac, air))
-    elif grid_name == 'ambre':
+    elif grid_name.lower() == 'ambre':
         # TODO: finish this section
         wave_grid_synth = np.genfromtxt(file_path, usecols=0)
+    elif grid_name.lower() == 'ferre':
+        with h5py.File(file_path, 'r') as f:
+            wave_grid_synth = f['wave_grid'][:]
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
                          '(phoenix, intrigoss, or ambre)'.format(grid_name))
@@ -272,23 +276,28 @@ def get_synth_spec_data(file_path, grid_name='phoenix'):
             a_m = param_data['ALPHA']
             vt = param_data['VT']
             params = [teff, logg, m_h, a_m, vt]
+    elif grid_name.lower() == 'ferre':
+        with h5py.File(file_path, 'r') as f:
+            indx = random.choice(range(0, len(f['teff'][:])))
+            flux = f['spectra'][indx]
+            teff = f['teff'][indx]
+            logg = f['logg'][indx]
+            m_h = f['fe_h'][indx]
+            a_m = np.nan
+            vt = np.nan
+            params = [teff, logg, m_h, a_m, vt]
     elif grid_name.lower() == 'ambre':
-
         filename = os.path.basename(file_path)
-
         teff = float(filename[1:5])
         if filename[7] == '-':
             logg = -1 * float(filename[8:11])
         else:
             logg = float(filename[8:11])
-
         vt = float(filename[18:20])
-
         if filename[22] == '-':
             m_h = -1 * float(filename[23:27])
         else:
             m_h = float(filename[23:27])
-
         if filename[29] == '-':
             a_m = -1 * float(filename[30:34])
         else:

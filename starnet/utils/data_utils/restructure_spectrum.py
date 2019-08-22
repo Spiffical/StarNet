@@ -5,6 +5,7 @@ from astropy.stats import sigma_clip
 from pysynphot import observation
 from pysynphot import spectrum as pysynspec
 from spectres import spectres
+import scipy
 from contextlib import contextmanager
 from scipy import interpolate
 
@@ -127,7 +128,23 @@ def asymmetric_sigmaclip1D(flux, sigma_upper=2.0, sigma_lower=0.5):
     return sigmaclip_flux
 
 
-def fit_continuum(flux, line_regions, wav, segments_step=10, sigma_upper=2.0,
+def gaussian_smooth_continuum1D(flux, wave_grid, err=None):
+
+    W = 50  # sigma of 50 Angstroms for the Gaussian kernel
+    cont = []
+    for i, w in enumerate(wave_grid):
+        dist = wave_grid - w
+        K = scipy.exp(-dist ** 2 / W ** 2)
+        if err is not None:
+            good_indices = (K != 0) & (err != 1)
+        else:
+            good_indices = K != 0
+        cont_val = np.dot(flux[good_indices], K[good_indices]) / np.sum(K[good_indices])
+        cont.append(cont_val)
+    return cont
+
+
+def fit_continuum(flux, wav, err=None, line_regions=None, segments_step=10, sigma_upper=2.0,
                   sigma_lower=0.5, fit='asym_sigmaclip', j=0):
     flux_copy = np.copy(flux)
 
@@ -146,64 +163,66 @@ def fit_continuum(flux, line_regions, wav, segments_step=10, sigma_upper=2.0,
             mask = (wav > lower_wl) & (wav < upper_wl)
             flux_copy[mask] = np.nan
 
-    # Get rms noise if required
-    if fit == 'c_sigmaclip':
-        rms_noise = get_noise_of_segments(flux_copy, segments)
+    if fit.lower() == 'gaussian_smooth':
+        cont_array = gaussian_smooth_continuum1D(flux_copy, wav, err)
+    elif fit.lower() in ['asym_sigmaclip', 'c_sigmaclip']:
+        # Determine continuum level in each segment
+        for k in range(len(segments) - 1):
+            flux_segment = flux_copy[segments[k]:segments[k + 1]]
+            if sum(np.isnan(flux_segment)) > 0.5 * len(flux_segment):
+                continue
+            if fit == 'asym_sigmaclip':
+                cont_ = asymmetric_sigmaclip1D(flux=flux_segment, sigma_upper=sigma_upper,
+                                               sigma_lower=sigma_lower)
+            elif fit == 'c_sigmaclip':
+                rms_noise = get_noise_of_segments(flux_copy, segments)
+                cont_ = c_sigmaclip1D(flux=flux_segment, rms_noise=rms_noise)
+            else:
+                raise Exception('No recognized continuum fitting procedure')
+            cont_array[segments[k]:segments[k + 1]] = cont_
 
-    # Determine continuum level in each segment
-    for k in range(len(segments) - 1):
-        flux_segment = flux_copy[segments[k]:segments[k + 1]]
-        if sum(np.isnan(flux_segment)) > 0.5 * len(flux_segment):
-            continue
-        if fit == 'asym_sigmaclip':
-            cont_ = asymmetric_sigmaclip1D(flux=flux_segment, sigma_upper=sigma_upper,
-                                           sigma_lower=sigma_lower)
-        elif fit == 'c_sigmaclip':
-            cont_ = c_sigmaclip1D(flux=flux_segment, rms_noise=rms_noise)
-        else:
-            raise Exception('No recognized continuum fitting procedure')
-        cont_array[segments[k]:segments[k + 1]] = cont_
+        # Fill in NaNs and zeros with interpolated values
+        prev_val = cont_array[0]
+        beg_idx = 0
+        for i, val in enumerate(cont_array):
+            if (np.isnan(val) and not np.isnan(prev_val)) or (val == 0 and prev_val != 0):
+                beg_idx = i - 1
+                beg_val = prev_val
+            elif (not np.isnan(val) and np.isnan(prev_val)) or (val != 0 and prev_val == 0):
+                end_idx = i
+                end_val = val
 
-    # Fill in NaNs and zeros with interpolated values
-    prev_val = cont_array[0]
-    beg_idx = 0
-    for i, val in enumerate(cont_array):
-        if (np.isnan(val) and not np.isnan(prev_val)) or (val == 0 and prev_val != 0):
-            beg_idx = i - 1
-            beg_val = prev_val
-        elif (not np.isnan(val) and np.isnan(prev_val)) or (val != 0 and prev_val == 0):
-            end_idx = i
-            end_val = val
+                # Interpolate between values on either side of the segment of NaNs/zeros
+                x = [wav[beg_idx], wav[end_idx]]
+                y = [beg_val, end_val]
+                xvals = wav[beg_idx:end_idx]
+                yinterp = np.interp(xvals, x, y)
 
-            # Interpolate between values on either side of the segment of NaNs/zeros
-            x = [wav[beg_idx], wav[end_idx]]
-            y = [beg_val, end_val]
-            xvals = wav[beg_idx:end_idx]
-            yinterp = np.interp(xvals, x, y)
+                # Patch back into cont_array
+                cont_array[beg_idx:end_idx] = yinterp
+            prev_val = val
 
-            # Patch back into cont_array
-            cont_array[beg_idx:end_idx] = yinterp
-        prev_val = val
-
-    # Fit a spline to the found continuum
-    t = np.linspace(wav[0], wav[-1], 20)
-    tck = interpolate.splrep(wav, cont_array, t=t[1:-1])
-    cont_array = interpolate.splev(wav, tck, der=0)
+        # Fit a spline to the found continuum
+        t = np.linspace(wav[0], wav[-1], 20)
+        tck = interpolate.splrep(wav, cont_array, t=t[1:-1])
+        cont_array = interpolate.splev(wav, tck, der=0)
+    else:
+        raise ValueError('{} continuum method not recognized'.format(fit))
 
     return cont_array, j
 
 
-def continuum_normalize(flux, line_regions, wav, segments_step=10, fit='asym_sigmaclip', sigma_upper=2.0,
-                        sigma_lower=0.5):
+def continuum_normalize(flux, wav, err=None, line_regions=None, segments_step=10, fit='asym_sigmaclip',
+                        sigma_upper=2.0, sigma_lower=0.5):
     flux_copy = np.copy(flux)
-    cont, _ = fit_continuum(flux_copy, line_regions, wav, segments_step, sigma_upper, sigma_lower, fit=fit)
+    cont, _ = fit_continuum(flux_copy, wav, err, line_regions, segments_step, sigma_upper, sigma_lower, fit=fit)
     norm_flux = flux_copy / cont
 
     return norm_flux, cont
 
 
-def continuum_normalize_parallel(spectra, line_regions, wav, segments_step=10, fit='asym_sigmaclip', sigma_upper=2.0,
-                                 sigma_lower=0.5):
+def continuum_normalize_parallel(spectra, wav, err=None, line_regions=None, segments_step=10, fit='asym_sigmaclip',
+                                 sigma_upper=2.0, sigma_lower=0.5):
     @contextmanager
     def poolcontext(*args, **kwargs):
         pool = multiprocessing.Pool(*args, **kwargs)
@@ -214,7 +233,7 @@ def continuum_normalize_parallel(spectra, line_regions, wav, segments_step=10, f
     num_cpu = multiprocessing.cpu_count()
     pool_size = num_cpu if num_spec >= num_cpu else num_spec
 
-    pool_arg_list = [(spectra[i], line_regions, wav,
+    pool_arg_list = [(spectra[i], wav, err, line_regions,
                       segments_step, fit, sigma_upper,
                       sigma_lower) for i in range(num_spec)]
     with poolcontext(processes=pool_size) as pool:
