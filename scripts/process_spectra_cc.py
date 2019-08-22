@@ -77,6 +77,7 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
 
     :return: modified flux array
     """
+
     # Degrade resolution
     err = np.zeros(len(flux))
     _, flux, _ = convolve_spectrum(wav, flux, err, to_resolution=to_res)
@@ -89,7 +90,7 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     # Add radial velocity
     if vrad != 0:
         rv_wav = add_radial_velocity(wav, vrad)
-        flux = rebin(rv_wav, wav, flux)
+        #flux = rebin(rv_wav, wav, flux)
         wav = rv_wav
 
     # Rebin to new wave grid
@@ -212,16 +213,33 @@ def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, ba
 
     # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
     t1 = time.time()
-    spectra_asym_sigma = continuum_normalize_parallel(spectra, LINE_REGIONS, wave_grid_obs, SEGMENTS_STEP,
-                                                      'asym_sigmaclip', 2.0, 0.5)
+    spectra_asym_sigma = continuum_normalize_parallel(spectra, wave_grid_obs,
+                                                      line_regions=LINE_REGIONS,
+                                                      segments_step=SEGMENTS_STEP,
+                                                      fit='asym_sigmaclip',
+                                                      sigma_upper=2.0, sigma_lower=0.5)
 
-    # Continuum normalize spectra with corrected sigma clipping continuum fitting method
-    spectra_c_sigma = continuum_normalize_parallel(spectra, LINE_REGIONS, wave_grid_obs, SEGMENTS_STEP,
-                                                  'c_sigmaclip', 2.0, 0.5)
+    # Continuum normalize spectra with gaussian smoothed continuum fitting method
+    spectra_gaussian_smooth = continuum_normalize_parallel(spectra, wave_grid_obs,
+                                                           fit='gaussian_smooth')
     print('Total continuum time: %.2f s' % (time.time() - t1))
 
     params = teff_list, logg_list, m_h_list, a_m_list, vt_list, vrot_list, vrad_list, noise_list
-    return spectra_asym_sigma, spectra_c_sigma, params
+    return spectra_asym_sigma, spectra_gaussian_smooth, params
+
+
+def collect_file_list(grid_name, spec_dir):
+
+    if grid_name == 'intrigoss' or grid_name == 'phoenix':
+        file_extension = 'fits'
+    elif grid_name == 'ambre':
+        file_extension = 'AMBRE'
+    elif grid_name == 'ferre':
+        file_extension = 'h5'
+    else:
+        file_extension = 'fits'
+    file_list = glob.glob(os.path.join(spec_dir, '*.{}'.format(file_extension)))
+    return file_list
 
 
 def main():
@@ -231,31 +249,27 @@ def main():
 
     # Check if supplied grid name is valid
     grid_name = args.grid.lower()
-    if grid_name not in ['intrigoss', 'phoenix', 'ambre']:
+    if grid_name not in ['intrigoss', 'phoenix', 'ambre', 'ferre']:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
-                         '(phoenix, intrigoss, or ambre)'.format(grid_name))
+                         '(phoenix, intrigoss, ferre, or ambre)'.format(grid_name))
 
-    # Collect file list
-    if grid_name == 'intrigoss' or grid_name == 'phoenix':
-        file_extension = 'fits'
-    elif grid_name == 'ambre':
-        file_extension = 'AMBRE'
-    else:
-        file_extension = 'fits'
-    file_list = glob.glob(os.path.join(args.spec_dir, '*.{}'.format(file_extension)))
+    # Collect list of files containing the spectra
+    file_list = collect_file_list(grid_name, args.spec_dir)
 
     # Get observational wavelength grid (stored in saved numpy array)
     wave_grid_obs = np.load(args.obs_wave_file)
 
     # Get synthetic wavelength grid
     # TODO: have these stored in data directory
-    if grid_name == 'intrigoss' or grid_name == 'ambre':
+    if grid_name == 'intrigoss' or grid_name == 'ambre' or grid_name == 'ferre':
         synth_wave_filename = file_list[0]
     elif grid_name == 'phoenix':
         if args.synth_wave_file is None or args.synth_wave_file.lower() == 'none':
             raise ValueError('for Phoenix grid, need to supply separate file containing wavelength grid')
         else:
             synth_wave_filename = args.synth_wave_file
+    else:
+        synth_wave_filename = None
     wave_grid_synth = get_synth_wavegrid(synth_wave_filename, grid_name)
 
     # Determine total number of spectra already in chosen directory
@@ -279,7 +293,7 @@ def main():
         # Process a batch of raw synthetic spectra
         t0_batch = time.time()
         print('Creating a batch of spectra...')
-        spec_asym, spec_c, params = generate_batch(file_list, wave_grid_synth, wave_grid_obs, args.resolution,
+        spec_asym, spec_g, params = generate_batch(file_list, wave_grid_synth, wave_grid_obs, args.resolution,
                                                    batch_size=args.batch_size,
                                                    max_vrot=args.rotational_vel,
                                                    max_vrad=args.radial_vel,
@@ -301,7 +315,7 @@ def main():
         print('Saving {} to {}'.format(unique_filename, args.save_dir))
         with h5py.File(save_path, 'w') as f:
             f.create_dataset('spectra_starnetnorm', data=np.asarray(spec_asym))
-            f.create_dataset('spectra_statcont', data=np.asarray(spec_c))
+            f.create_dataset('spectra_gaussiannorm', data=np.asarray(spec_g))
             f.create_dataset('teff', data=np.asarray(teff))
             f.create_dataset('logg', data=np.asarray(logg))
             f.create_dataset('M_H', data=np.asarray(m_h))
