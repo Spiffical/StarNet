@@ -1,5 +1,6 @@
-import os, sys
-sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+from starnet.utils.data_utils.restructure_spectrum import continuum_normalize_parallel
+from starnet.utils.data_utils.augment import augment_spectra_parallel
+from starnet.utils.data_utils.loading import get_synth_wavegrid, get_synth_spec_data, collect_file_list
 import numpy as np
 import time
 import random
@@ -7,14 +8,9 @@ import glob
 import h5py
 import argparse
 import uuid
-import multiprocessing
-from contextlib import contextmanager
-
-from starnet.utils.data_utils.restructure_spectrum import continuum_normalize, continuum_normalize_parallel, \
-    rebin, ensure_constant_sampling
-from starnet.utils.data_utils.augment import convolve_spectrum, add_radial_velocity, add_noise, fastRotBroad
-from starnet.utils.data_utils.loading import get_synth_wavegrid, get_synth_spec_data
-from eniric.broaden import convolution
+import os
+import sys
+sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 
 # Define parameters needed for continuum fitting
 LINE_REGIONS = [[4210, 4240], [4250, 4410], [4333, 4388], [4845, 4886], [5160, 5200], [5874, 5916], [6530, 6590]]
@@ -69,83 +65,10 @@ def parse_args():
     return parser.parse_args()
 
 
-def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=20000):
-    """
-
-    :param flux: an array of flux values
-    :param wav: synthetic wavelength grid
-    :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
-    :param rot: value of rotational velocity (km/s) to apply to flux array
-    :param noise: value of noise (fraction of flux value) to apply to flux array
-    :param vrad: value of radial velocity (km/s) to apply to flux array
-    :param to_res: resolution of output flux array requested
-
-    :return: modified flux array
-    """
-
-    # Degrade resolution and apply rotational broadening
-    epsilon = random.uniform(0, 1.)
-    _, _, flux = convolution(wav=wav,
-                             flux=flux,
-                             vsini=rot,
-                             R=to_res,
-                             epsilon=epsilon,
-                             normalize=True,
-                             num_procs=10)
-
-    # Add radial velocity
-    if vrad != 0:
-        rv_wav = add_radial_velocity(wav, vrad)
-        wav = rv_wav
-
-    # Rebin to new wave grid
-    flux = rebin(new_wav, wav, flux)
-
-    # Add noise
-    flux = add_noise(flux, noise)
-
-    return flux
-
-
-def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_list, instrument_res):
-    """
-    Augments (in parallel) a list of spectra with rotational velocity, radial velocity, noise, and resolution
-    degradation.
-
-    :param spectra: list of spectra
-    :param wav: list of synthetic wavelength grids
-    :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
-    :param vrot_list: a list, same length as spectra list, of rotational velocities (km/s) to apply
-    :param noise_list: a list, same length as spectra list, of maximum noise (fraction of flux) to apply
-    :param vrad_list: a list, same length as spectra list, of radial velocities (km/s) to apply
-    :param instrument_res: instrumental resolution to degrade the synthetic spectra to
-
-    :return: a list of modified input spectra
-    """
-
-    @contextmanager
-    def poolcontext(*args, **kwargs):
-        pool = multiprocessing.Pool(*args, **kwargs)
-        yield pool
-        pool.terminate()
-
-    num_spectra = np.shape(spectra)[0]
-    num_cpu = multiprocessing.cpu_count()
-    pool_size = num_cpu if num_spectra >= num_cpu else num_spectra
-    print('[INFO] Pool size: {}'.format(pool_size))
-
-    pool_arg_list = [(spectra[i], wav[i], new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
-                     for i in range(num_spectra)]
-    with poolcontext(processes=pool_size) as pool:
-        results = pool.starmap(augment_spectrum, pool_arg_list)
-
-    return results
-
-
 def generate_batch(file_list, wave_grid_obs, instrument_res, batch_size=32, max_vrot_to_apply=70,
                    max_vrad_to_apply=200, max_noise=0.07, spectral_grid_name='phoenix', synth_wave_filename=None,
                    max_teff=np.Inf,  min_teff=-np.Inf, max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf,
-                   min_feh=-np.Inf, max_afe=np.Inf, min_afe=-np.Inf, sigma_gaussian=50):
+                   min_feh=-np.Inf, max_afe=np.Inf, min_afe=-np.Inf):
 
     # Based on the observed wavelength grid, define a wavelength range to slice the synthetic wavelength grid and spectrum
     # (for quicker processing times). Extend on both sides to accommodate radial velocity shifts on synthetic spectra,
@@ -284,31 +207,6 @@ def generate_batch(file_list, wave_grid_obs, instrument_res, batch_size=32, max_
     return spectra_asym_sigma, params
 
 
-def collect_file_list(grid_name, spec_dir):
-
-    if grid_name == 'intrigoss' or grid_name == 'phoenix':
-        file_extension = 'fits'
-    elif grid_name == 'ambre':
-        file_extension = 'AMBRE'
-    elif grid_name == 'ferre':
-        file_extension = 'h5'
-    elif grid_name == 'nlte':
-        file_list = []
-        for root, dirs, files in os.walk(spec_dir):
-
-            # Iterate through files
-            for file in files:
-                if '_N' in file and 'test' not in root:
-                    filepath = os.path.join(root, file)
-                    file_list.append(filepath)
-        return file_list
-    else:
-        file_extension = 'fits'
-
-    file_list = glob.glob(os.path.join(spec_dir, '*.{}'.format(file_extension)))
-    return file_list
-
-
 def main():
 
     # Collect arguments
@@ -359,8 +257,7 @@ def main():
                                                    max_logg=args.max_logg,
                                                    min_logg=args.min_logg,
                                                    max_feh=args.max_feh,
-                                                   min_feh=args.min_feh,
-                                                   sigma_gaussian=args.sigma_gaussian)
+                                                   min_feh=args.min_feh)
         teff, logg, m_h, a_m, vt, vrot, vrad, noise = params
 
         # Save this batch to an h5 file in chosen save directory
