@@ -5,6 +5,31 @@ import os
 from astropy.io import fits as pyfits
 
 
+def collect_file_list(grid_name, spec_dir):
+
+    if grid_name == 'intrigoss' or grid_name == 'phoenix':
+        file_extension = 'fits'
+    elif grid_name == 'ambre':
+        file_extension = 'AMBRE'
+    elif grid_name == 'ferre':
+        file_extension = 'h5'
+    elif grid_name == 'nlte':
+        file_list = []
+        for root, dirs, files in os.walk(spec_dir):
+
+            # Iterate through files
+            for file in files:
+                if '_N' in file and 'test' not in root:
+                    filepath = os.path.join(root, file)
+                    file_list.append(filepath)
+        return file_list
+    else:
+        file_extension = 'fits'
+
+    file_list = glob.glob(os.path.join(spec_dir, '*.{}'.format(file_extension)))
+    return file_list
+
+
 class load_data_from_h5(object):
 
     def __init__(self, data_file, spec_name, target_name, wave_grid_key=None, noise_key=None, start_indx=None,
@@ -75,61 +100,6 @@ class load_data_from_h5(object):
         
         return (data*sigma)+mu
 
-    
-# ['spectrum', 'teff', 'logg', 'M_H', 'a_M', 'C_M', 'N_M']
-class load_data_from_h5turbospec(object):
-
-    def __init__(self, data_file, batch_size, indx, l, calib=False, teaghan=False,
-                 mu_std='/home/spiffical/data/spiffical/cnn_synth+real/mu_std_synth+real3.txt'):
-        
-        with open(mu_std,'r') as f1:
-            self.mu = np.array(map(float, f1.readline().split()[0:l]))
-            self.sigma = np.array(map(float, f1.readline().split()[0:l]))
-        
-        # load data
-        F = h5py.File(data_file, 'r')
-        self.X = F['spectra'][indx:indx+batch_size]
-        self.y = F['model_params'][indx:indx+batch_size,:l]
-        
-        self.normed_y = self.normalize()
-        
-    def normalize(self):
-        
-        return (self.y-self.mu)/self.sigma
-            
-    def denormalize(self, data):
-        
-        return ((data*self.sigma)+self.mu)
-
-    
-# ['spectrum', 'teff', 'logg', 'M_H', 'a_M', 'C_M', 'N_M']
-def load_batch_from_h5turbospec(data_file, num_objects, batch_size, indx, l=3, mu_std=''):
-
-    with open(mu_std,'r') as f1:
-        mu = np.array(map(float, f1.readline().split()[0:l]))
-        sigma = np.array(map(float, f1.readline().split()[0:l]))
-        
-    # Generate list of random indices (within the relevant partition of the main data file, e.g. the
-    # training set) to be used to index into data_file
-    indices = random.sample(range(indx, indx+num_objects), batch_size)
-    indices = np.sort(indices)
-    
-    # load data
-    F = h5py.File(data_file, 'r')
-    X = F['spectra']
-    y = F['model_params']
-
-    X = X[indices,:]
-    y = y[indices,:l]
-        
-    # Normalize labels
-    normed_y = (y-mu)/sigma
-        
-    # Reshape X data for compatibility with CNN
-    X = X.reshape(len(X), 7214, 1)
-        
-    return X, normed_y
-
 
 def load_contiguous_slice_from_h5(data_path, start_indx, end_indx, spec_name='',
                                   targetname=['teff', 'logg', 'M_H'], mu=None, sigma=None):
@@ -178,28 +148,6 @@ def load_batch_from_h5(data_filename, indices, spec_name='', targetname=['teff',
                 y = (y-mu)/sigma
         
         return X, y
-    
-    
-def load_batch_from_vmh5batch(data_file, targetname=['teff', 'logg', 'M_H'], mu_std=''):
-        
-        with open(mu_std,'r') as f1:
-            mu = np.array(map(float, f1.readline().split()[0:len(targetname)]))
-            sigma = np.array(map(float, f1.readline().split()[0:len(targetname)]))
-        
-        # load data
-        F = h5py.File(data_file, 'r')
-        X = F['spectra_AMBRE_starnetnorm'][:]
-            
-        targets = []
-        for target in targetname:
-            targets.append(F[target])
-        
-        y = np.column_stack([t[:] for t in targets])
-
-        # Normalize labels
-        normed_y = (y-mu)/sigma
-        
-        return X, normed_y
 
 
 def get_synth_wavegrid(file_path, grid_name='intrigoss'):
@@ -211,7 +159,6 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
 
     :return: Wavelength grid
     """
-
 
     if grid_name.lower() == 'intrigoss':
         # For INTRIGOSS spectra, the wavelength array is stored in the same file as the spectra
