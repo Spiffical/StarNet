@@ -1,7 +1,18 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 import argparse
-from starnet.models.cnn_models import StarNet2017, StarNet2017DeepEnsemble, StarResNet, StarResNetDeepEnsemble
+from starnet.models.cnn_models import StarNet2017, StarNet2017DeepEnsemble, StarResNet, StarResNetDeepEnsemble, \
+    StarResNetSmallDeepEnsemble, StarResNetSmall, StarResNetDeepEnsembleTwoOutputs, StochasticResNet
+
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--data_path', type=str, required=True,
@@ -10,8 +21,10 @@ parser.add_argument('--num_train', type=int, required=True,
                     help='Size of training set')
 parser.add_argument('--targets', nargs='+', required=True,
                     help='Keys of h5py file to train on')
+parser.add_argument('--val_data_path', type=str, default='',
+                    help='(optional) path of validation data set')
 parser.add_argument('--model_type', type=str, default='StarNet2017',
-                    help='Which model type to train (StarNet2017, StarNet2017DeepEnsemble, StarResNet)')
+                    help='Which model type to train (StarNet2017, StarNet2017DeepEnsemble, StarResNet, etc.)')
 parser.add_argument('--save_folder', type=str, default=None,
                     help='Folder to save trained model in (if None, folder name created based on date)')
 parser.add_argument('-s', '--spec_key', type=str, default='spectra_starnetnorm',
@@ -31,9 +44,17 @@ parser.add_argument('-n', '--noise', type=float, default=None,
                          'noise added in the spectra)')
 parser.add_argument('-g', '--num_gpu', type=int, default=1,
                     help='Number of GPUs available for training')
+parser.add_argument('-v', '--verbose', type=int, default=1,
+                    help='level of output (0: nothing, 1: progress bar, 2: epoch)')
+parser.add_argument("--hardmine", type=str2bool, nargs='?',
+                    const=True, default=False,
+                    help="Activate hard mining")
+
+
 args = parser.parse_args()
 
 data_path = args.data_path
+val_data_path = args.val_data_path
 model_type = args.model_type
 num_train = args.num_train
 targets = args.targets
@@ -46,6 +67,7 @@ telluric_mask_file = args.telluric_file
 finetune_model = args.finetune_model
 max_noise = args.noise
 num_gpu = args.num_gpu
+use_hardmining = args.hardmine
 
 if model_type == 'StarNet2017':
     NN = StarNet2017()
@@ -53,8 +75,16 @@ elif model_type == 'StarNet2017DeepEnsemble':
     NN = StarNet2017DeepEnsemble()
 elif model_type == 'StarResNet':
     NN = StarResNet()
+elif model_type == 'StarResNetSmall':
+    NN = StarResNetSmall()
 elif model_type == 'StarResNetDeepEnsemble':
     NN = StarResNetDeepEnsemble()
+elif model_type == 'StarResNetSmallDeepEnsemble':
+    NN = StarResNetSmallDeepEnsemble()
+elif model_type == 'StarResNetDeepEnsembleTwoOutputs':
+    NN = StarResNetDeepEnsembleTwoOutputs()
+elif model_type == 'StochasticResNet':
+    NN = StochasticResNet()
 else:
     raise ValueError('Model type {} not valid'.format(model_type))
 
@@ -64,19 +94,24 @@ NN.folder_name = save_folder
 NN.targetname = targets
 NN.spec_name = spec_key
 NN.data_filename = data_path
+NN.val_data_filename = val_data_path
 NN.telluric_mask_file = telluric_mask_file
 NN.num_train = num_train
 NN.use_val_generator = 'auto'
+NN.shuffle_indices = False
 
-NN.verbose = 1  # 0: nothing, 1: progress bar, 2: epoch
+NN.verbose = args.verbose  # 0: nothing, 1: progress bar, 2: epoch
 NN.batch_size = batch_size
 NN.max_epochs = max_epochs
 NN.max_added_noise = max_noise
 NN.max_frac_zeros = max_frac_zeros
 NN.num_gpu = num_gpu
+NN.use_hard_mining = bool(use_hardmining)
 
 # To enable autosave
 NN.autosave = True
+
+print('HARD MINING: {}'.format(use_hardmining))
 
 # Load trained model if finetuning requested
 if save_folder is not None and finetune_model is not None:

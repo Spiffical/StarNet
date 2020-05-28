@@ -10,9 +10,11 @@ import uuid
 import multiprocessing
 from contextlib import contextmanager
 
-from starnet.utils.data_utils.restructure_spectrum import continuum_normalize_parallel, rebin, ensure_constant_sampling
+from starnet.utils.data_utils.restructure_spectrum import continuum_normalize, continuum_normalize_parallel, \
+    rebin, ensure_constant_sampling
 from starnet.utils.data_utils.augment import convolve_spectrum, add_radial_velocity, add_noise, fastRotBroad
 from starnet.utils.data_utils.loading import get_synth_wavegrid, get_synth_spec_data
+from eniric.broaden import convolution
 
 # Define parameters needed for continuum fitting
 LINE_REGIONS = [[4210, 4240], [4250, 4410], [4333, 4388], [4845, 4886], [5160, 5200], [5874, 5916], [6530, 6590]]
@@ -40,9 +42,9 @@ def parse_args():
     parser.add_argument('-r', '--resolution', type=int, default=47000,
                         help='instrumental resolution to convolve to')
     parser.add_argument('-vrad', '--radial_vel', type=float, default=200.,
-                        help='maximum radial velocity (km/s)')
+                        help='maximum radial velocity (km/s) to modify the spectra with')
     parser.add_argument('-vrot', '--rotational_vel', type=float, default=70.,
-                        help='maximum rotational velocity (km/s)')
+                        help='maximum rotational velocity (km/s) to modify the spectra with')
     parser.add_argument('--max_teff', type=float, default=np.Inf,
                         help='maximum temperature (K)')
     parser.add_argument('--min_teff', type=float, default=-np.Inf,
@@ -59,6 +61,9 @@ def parse_args():
                         help='maximum [alpha/Fe]')
     parser.add_argument('--min_afe', type=float, default=-np.Inf,
                         help='minimum [alpha/Fe]')
+    parser.add_argument('--sigma_gaussian', type=float, default=50.,
+                        help='sigma of Gaussian kernel if using Gaussian smoothing'
+                             'continuum normalization')
 
     # Collect arguments
     return parser.parse_args()
@@ -78,19 +83,19 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     :return: modified flux array
     """
 
-    # Degrade resolution
-    err = np.zeros(len(flux))
-    _, flux, _ = convolve_spectrum(wav, flux, err, to_resolution=to_res)
-
-    # Apply rotational broadening
-    if rot != 0:
-        epsilon = random.uniform(0, 1.)
-        flux = fastRotBroad(wav, flux, epsilon, rot)
+    # Degrade resolution and apply rotational broadening
+    epsilon = random.uniform(0, 1.)
+    _, _, flux = convolution(wav=wav,
+                             flux=flux,
+                             vsini=rot,
+                             R=to_res,
+                             epsilon=epsilon,
+                             normalize=True,
+                             num_procs=10)
 
     # Add radial velocity
     if vrad != 0:
         rv_wav = add_radial_velocity(wav, vrad)
-        #flux = rebin(rv_wav, wav, flux)
         wav = rv_wav
 
     # Rebin to new wave grid
@@ -108,7 +113,7 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     degradation.
 
     :param spectra: list of spectra
-    :param wav: synthetic wavelength grid
+    :param wav: list of synthetic wavelength grids
     :param new_wav: wavelength grid to rebin the synthetic wavelength grid to
     :param vrot_list: a list, same length as spectra list, of rotational velocities (km/s) to apply
     :param noise_list: a list, same length as spectra list, of maximum noise (fraction of flux) to apply
@@ -129,7 +134,7 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     pool_size = num_cpu if num_spectra >= num_cpu else num_spectra
     print('[INFO] Pool size: {}'.format(pool_size))
 
-    pool_arg_list = [(spectra[i], wav, new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
+    pool_arg_list = [(spectra[i], wav[i], new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
                      for i in range(num_spectra)]
     with poolcontext(processes=pool_size) as pool:
         results = pool.starmap(augment_spectrum, pool_arg_list)
@@ -137,95 +142,146 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     return results
 
 
-def generate_batch(file_list, wave_grid_synth, wave_grid_obs, instrument_res, batch_size=32, max_vrot=70, max_vrad=200,
-                   max_noise=0.07, spectral_grid_name='phoenix', max_teff=np.Inf, min_teff=-np.Inf,
-                   max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf, min_feh=-np.Inf, max_afe=np.Inf,
-                   min_afe=-np.Inf):
-
-    # Initialize lists
-    spectra = []
-    teff_list = []
-    logg_list = []
-    vt_list = []
-    m_h_list = []
-    a_m_list = []
-    vrot_list = []
-    vrad_list = []
-    noise_list = []
+def generate_batch(file_list, wave_grid_obs, instrument_res, batch_size=32, max_vrot_to_apply=70,
+                   max_vrad_to_apply=200, max_noise=0.07, spectral_grid_name='phoenix', synth_wave_filename=None,
+                   max_teff=np.Inf,  min_teff=-np.Inf, max_logg=np.Inf, min_logg=-np.Inf, max_feh=np.Inf,
+                   min_feh=-np.Inf, max_afe=np.Inf, min_afe=-np.Inf, sigma_gaussian=50):
 
     # Based on the observed wavelength grid, define a wavelength range to slice the synthetic wavelength grid and spectrum
     # (for quicker processing times). Extend on both sides to accommodate radial velocity shifts on synthetic spectra,
     # and also to eliminate edge effects from rotational broadening
-    extension = 10  # Angstroms
+    extension = 5  # Angstroms
     wave_min_request = wave_grid_obs[0] - extension
     wave_max_request = wave_grid_obs[-1] + extension
-    wave_indices = (wave_grid_synth > wave_min_request) & (wave_grid_synth < wave_max_request)
-    wvl = wave_grid_synth[wave_indices]
 
     # This next block of code will iteratively select a random file from the supplied list of synthetic spectra files,
     # extract the flux and stellar parameters from it, and if it falls within the requested parameter space, will
     # append the data to the list of spectra to be modified. It will repeat until the requested batch size has been met.
     t1 = time.time()
-    while np.shape(spectra)[0] < batch_size:
-        # Randomly collect a file from the whole list of synthetic spectra files
-        batch_index = random.choice(range(0, len(file_list)))
-        batch_file = file_list[batch_index]
+    completed = False
+    while not completed:
+        # Initialize lists
+        spectra = []
+        wavegrid_synth_list = []
+        teff_list = []
+        logg_list = []
+        vt_list = []
+        m_h_list = []
+        a_m_list = []
+        vrot_list = []
+        vrad_list = []
+        noise_list = []
+        batch_file_list = []
 
-        # Collect flux and stellar parameters from file
-        flux, params = get_synth_spec_data(batch_file, spectral_grid_name)
-        teff, logg, m_h, a_m, vt = params
+        while np.shape(spectra)[0] < batch_size:
+            # Randomly collect a file from the whole list of synthetic spectra files
+            batch_index = random.choice(range(0, len(file_list)))
+            batch_file = file_list[batch_index]
 
-        # Skip this spectrum if beyond requested temperature, logg, or metallicity limits
-        if (teff > max_teff) or (teff < min_teff) or (logg > max_logg) or (logg < min_logg) or \
-                (m_h > max_feh) or (m_h < min_feh) or (a_m > max_afe) or (a_m < min_afe):
-            continue
+            # Collect flux and stellar parameters from file
+            flux, params = get_synth_spec_data(batch_file, spectral_grid_name)
+            teff = params['teff']
+            logg = params['logg']
+            m_h = params['m_h']
+            a_m = params['a_m']
+            vt = params['vt']
+            vrot = params['vrot']
+
+            # Skip if flux is mostly NaNs
+            if sum(np.isnan(flux)) > 0.5*len(flux):
+                print('Spectrum has too many NaNs! Skipping...')
+                print('>>> Spectrum length: {}'.format(len(flux)))
+                print('>>> Number of NaNs:  {}'.format(sum(np.isnan(flux))))
+                print('>>> Parameters: {} {} {} {}'.format(teff, logg, m_h, a_m, vrot))
+                continue
+
+            # Skip this spectrum if beyond requested temperature, logg, or metallicity limits
+            if (teff > max_teff) or (teff < min_teff) or (logg > max_logg) or (logg < min_logg) or \
+                    (m_h > max_feh) or (m_h < min_feh) or (a_m > max_afe) or (a_m < min_afe):
+                continue
+            else:
+                vrad = random.uniform(-max_vrad_to_apply, max_vrad_to_apply)  # km/s
+                noise = np.random.rand() * max_noise
+
+                # Only choose a vrot value if the spectrum wasn't already modified with vrot
+                if vrot is np.nan or vrot == 0:
+                    vrot = random.uniform(0, max_vrot_to_apply)  # km/s
+
+                # Get synthetic wavelength grid
+                # TODO: have these stored in data directory
+                if spectral_grid_name == 'intrigoss' or spectral_grid_name == 'ambre' or spectral_grid_name == 'ferre'\
+                        or spectral_grid_name == 'nlte':
+                    synth_wave_filename = batch_file
+                elif spectral_grid_name == 'phoenix':
+                    if synth_wave_filename is None or synth_wave_filename.lower() == 'none':
+                        raise ValueError('for Phoenix grid, need to supply separate file containing wavelength grid')
+                else:
+                    synth_wave_filename = None
+                wave_grid_synth = get_synth_wavegrid(synth_wave_filename, spectral_grid_name)
+
+                # Trim wave grid and flux array
+                wave_indices = (wave_grid_synth > wave_min_request) & (wave_grid_synth < wave_max_request)
+                wave_grid_synth = wave_grid_synth[wave_indices]
+                flux = flux[wave_indices]
+
+                # Check for repeating wavelengths and remove them
+                dw = wave_grid_synth[1:] - wave_grid_synth[:-1]
+                idx = np.where(dw == 0)[0]
+                if len(idx) > 0:
+                    wave_grid_synth = np.delete(wave_grid_synth, idx[0])
+                    flux = np.delete(flux, idx[0])
+
+                # Fill up lists
+                spectra.append(flux)
+                wavegrid_synth_list.append(wave_grid_synth)
+                teff_list.append(teff)
+                logg_list.append(logg)
+                m_h_list.append(m_h)
+                a_m_list.append(a_m)
+                vt_list.append(vt)
+                vrot_list.append(vrot)
+                vrad_list.append(vrad)
+                noise_list.append(noise)
+                batch_file_list.append(batch_file)
+        t2 = time.time()
+        print('Time taken to collect spectra: %.1f s' % (t2 - t1))
+        print('File paths for collected spectra: {}'.format(batch_file_list))
+
+        # Modify the rotational velocity only if the spectra aren't already modified
+        if max_vrot_to_apply > 0:
+            modify_vrot_list = vrot_list
         else:
-            vrad = random.uniform(-max_vrad, max_vrad)  # km/s
-            vrot = random.uniform(0, max_vrot)  # km/s
-            noise = np.random.rand() * max_noise
+            modify_vrot_list = np.zeros(len(vrot_list))
 
-            # Fill up lists
-            spectra.append(flux[wave_indices])
-            teff_list.append(teff)
-            logg_list.append(logg)
-            m_h_list.append(m_h)
-            a_m_list.append(a_m)
-            vt_list.append(vt)
-            vrot_list.append(vrot)
-            vrad_list.append(vrad)
-            noise_list.append(noise)
-    t2 = time.time()
-    print('Time taken to collect spectra: %.1f s' % (t2 - t1))
+        t1 = time.time()
+        # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)
+        spectra = augment_spectra_parallel(spectra, wavegrid_synth_list, wave_grid_obs, modify_vrot_list, noise_list,
+                                           vrad_list, instrument_res)
+        print('Total modify time: %.1f s' % (time.time() - t1))
 
-    # First make sure the wavelength array has a constant sampling.
-    constant_sampling_wvl = ensure_constant_sampling(wvl)
-    if not np.all(constant_sampling_wvl == wvl):
-        for i, spec in enumerate(spectra):
-            mod_spec = rebin(constant_sampling_wvl, wvl, spec)
-            spectra[i] = mod_spec
-    wvl = constant_sampling_wvl
+        # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
+        t1 = time.time()
+        spectra_asym_sigma = continuum_normalize_parallel(spectra, wave_grid_obs,
+                                                          line_regions=LINE_REGIONS,
+                                                          segments_step=SEGMENTS_STEP,
+                                                          fit='asym_sigmaclip',
+                                                          sigma_upper=2.0, sigma_lower=0.5)
 
-    # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)
-    t1 = time.time()
-    spectra = augment_spectra_parallel(spectra, wvl, wave_grid_obs, vrot_list, noise_list, vrad_list,
-                                      instrument_res)
-    print('Total modify time: %.1f s' % (time.time() - t1))
+        print('Total continuum time: %.2f s' % (time.time() - t1))
 
-    # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
-    t1 = time.time()
-    spectra_asym_sigma = continuum_normalize_parallel(spectra, wave_grid_obs,
-                                                      line_regions=LINE_REGIONS,
-                                                      segments_step=SEGMENTS_STEP,
-                                                      fit='asym_sigmaclip',
-                                                      sigma_upper=2.0, sigma_lower=0.5)
+        # Check again for nans
+        nan_problem = False
+        for f in spectra:
+            if sum(np.isnan(f)) > 0.5 * len(f):
+                print('Spectrum has too many NaNs! Collecting another batch...')
+                nan_problem = True
+            else:
+                continue
+        if not nan_problem:
+            completed = True
 
-    # Continuum normalize spectra with gaussian smoothed continuum fitting method
-    spectra_gaussian_smooth = continuum_normalize_parallel(spectra, wave_grid_obs,
-                                                           fit='gaussian_smooth')
-    print('Total continuum time: %.2f s' % (time.time() - t1))
-
-    params = teff_list, logg_list, m_h_list, a_m_list, vt_list, vrot_list, vrad_list, noise_list
-    return spectra_asym_sigma, spectra_gaussian_smooth, params
+        params = teff_list, logg_list, m_h_list, a_m_list, vt_list, vrot_list, vrad_list, noise_list
+    return spectra_asym_sigma, params
 
 
 def collect_file_list(grid_name, spec_dir):
@@ -236,8 +292,19 @@ def collect_file_list(grid_name, spec_dir):
         file_extension = 'AMBRE'
     elif grid_name == 'ferre':
         file_extension = 'h5'
+    elif grid_name == 'nlte':
+        file_list = []
+        for root, dirs, files in os.walk(spec_dir):
+
+            # Iterate through files
+            for file in files:
+                if '_N' in file and 'test' not in root:
+                    filepath = os.path.join(root, file)
+                    file_list.append(filepath)
+        return file_list
     else:
         file_extension = 'fits'
+
     file_list = glob.glob(os.path.join(spec_dir, '*.{}'.format(file_extension)))
     return file_list
 
@@ -249,7 +316,7 @@ def main():
 
     # Check if supplied grid name is valid
     grid_name = args.grid.lower()
-    if grid_name not in ['intrigoss', 'phoenix', 'ambre', 'ferre']:
+    if grid_name not in ['intrigoss', 'phoenix', 'ambre', 'ferre', 'nlte', 'mpia']:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
                          '(phoenix, intrigoss, ferre, or ambre)'.format(grid_name))
 
@@ -258,19 +325,6 @@ def main():
 
     # Get observational wavelength grid (stored in saved numpy array)
     wave_grid_obs = np.load(args.obs_wave_file)
-
-    # Get synthetic wavelength grid
-    # TODO: have these stored in data directory
-    if grid_name == 'intrigoss' or grid_name == 'ambre' or grid_name == 'ferre':
-        synth_wave_filename = file_list[0]
-    elif grid_name == 'phoenix':
-        if args.synth_wave_file is None or args.synth_wave_file.lower() == 'none':
-            raise ValueError('for Phoenix grid, need to supply separate file containing wavelength grid')
-        else:
-            synth_wave_filename = args.synth_wave_file
-    else:
-        synth_wave_filename = None
-    wave_grid_synth = get_synth_wavegrid(synth_wave_filename, grid_name)
 
     # Determine total number of spectra already in chosen directory
     total_num_spec = 0
@@ -293,18 +347,20 @@ def main():
         # Process a batch of raw synthetic spectra
         t0_batch = time.time()
         print('Creating a batch of spectra...')
-        spec_asym, spec_g, params = generate_batch(file_list, wave_grid_synth, wave_grid_obs, args.resolution,
+        spec_asym, params = generate_batch(file_list, wave_grid_obs, args.resolution,
                                                    batch_size=args.batch_size,
-                                                   max_vrot=args.rotational_vel,
-                                                   max_vrad=args.radial_vel,
+                                                   max_vrot_to_apply=args.rotational_vel,
+                                                   max_vrad_to_apply=args.radial_vel,
                                                    max_noise=args.noise,
                                                    spectral_grid_name=grid_name,
+                                                   synth_wave_filename=args.synth_wave_file,
                                                    max_teff=args.max_teff,
                                                    min_teff=args.min_teff,
                                                    max_logg=args.max_logg,
                                                    min_logg=args.min_logg,
                                                    max_feh=args.max_feh,
-                                                   min_feh=args.min_feh)
+                                                   min_feh=args.min_feh,
+                                                   sigma_gaussian=args.sigma_gaussian)
         teff, logg, m_h, a_m, vt, vrot, vrad, noise = params
 
         # Save this batch to an h5 file in chosen save directory
@@ -314,8 +370,8 @@ def main():
         save_path = os.path.join(args.save_dir, unique_filename)
         print('Saving {} to {}'.format(unique_filename, args.save_dir))
         with h5py.File(save_path, 'w') as f:
-            f.create_dataset('spectra_starnetnorm', data=np.asarray(spec_asym))
-            f.create_dataset('spectra_gaussiannorm', data=np.asarray(spec_g))
+            f.create_dataset('spectra_asymnorm', data=np.asarray(spec_asym))
+            #f.create_dataset('spectra_gaussiannorm', data=np.asarray(spec_g))
             f.create_dataset('teff', data=np.asarray(teff))
             f.create_dataset('logg', data=np.asarray(logg))
             f.create_dataset('M_H', data=np.asarray(m_h))
