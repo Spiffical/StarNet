@@ -2,13 +2,16 @@ import os
 import argparse
 
 HOME_DIR = os.getenv('HOME')
+SLURM_TMPDIR = os.getenv('SLURM_TMPDIR')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--output_path', type=str, default='./jobs/todo/submit_job.sh',
                     help='Path of training file')
 parser.add_argument('--data_path', type=str,
                     help='Path of training file')
-parser.add_argument('--train_script', type=str, default=os.path.join(HOME_DIR, 'StarNet/starnet/train_StarNet.py'),
+parser.add_argument('--val_data_path', type=str, default='',
+                    help='(optional) path of validation data set')
+parser.add_argument('--train_script', type=str, default=os.path.join(HOME_DIR, 'StarNet/scripts/train_StarNet.py'),
                     help='Path to training script')
 parser.add_argument('--virtual_env', type=str, required=True,
                     help='Name of the virtual environment to use')
@@ -36,23 +39,32 @@ parser.add_argument('--ensemble', type=int, default=1,
                     help='Number of models to train in an ensemble')
 parser.add_argument('--num_gpu', type=int, default=1,
                     help='Number of GPUs available for training')
+parser.add_argument('--hardmine', type=bool, default=False,
+                    help='Whether or not to use hard mining')
 args = parser.parse_args()
 
 
 def write_script(output_path, data_path, train_script, virtual_env, num_train, targets, save_folder, spec_key,
-                 batch_size, epochs, zeros, telluric_file, finetune_model, num_gpu, model_type):
+                 batch_size, epochs, zeros, telluric_file, finetune_model, num_gpu, model_type, val_data_path, hardmine):
 
     if not output_path.endswith('.sh'):
         output_path += '.sh'
+
+    data_filename = os.path.basename(data_path)
+    #data_path_slurmtmpdir = os.path.join(SLURM_TMPDIR, data_filename)
 
     print('Writing file to {}'.format(output_path))
     with open(output_path, 'w') as writer:
         writer.write('#!/bin/bash\n')
         writer.write('module load python/3.6\n')
         writer.write('source {}\n'.format(os.path.join(HOME_DIR, virtual_env, 'bin/activate')))
+        #writer.write('cp {} {}/'.format(data_path, SLURM_TMPDIR))
         writer.write('\n\n')
+
         writer.write('python {} \\\n'.format(train_script))
         writer.write('--data_path %s \\\n' % data_path)
+        if val_data_path != '':
+            writer.write('--val_data_path %s \\\n' % val_data_path)
         writer.write('--num_train %s \\\n' % num_train)
         writer.write('--targets')
         for target in targets:
@@ -66,6 +78,8 @@ def write_script(output_path, data_path, train_script, virtual_env, num_train, t
         writer.write('--telluric_file %s \\\n' % telluric_file)
         writer.write('--finetune_model %s \\\n' % finetune_model)
         writer.write('--num_gpu %s \\\n' % num_gpu)
+        writer.write('--verbose 2 \\\n')
+        writer.write('--hardmine %s \\\n' % str(hardmine))
         writer.write('--model_type %s' % model_type)
 
 
@@ -82,8 +96,9 @@ if args.ensemble > 1:
         output_path_ensemble = output_job_path[:-3] + '_{}.sh'.format(i)
         write_script(output_path_ensemble, args.data_path, args.train_script, args.virtual_env, args.num_train,
                      args.targets, save_folder_ensemble, args.spec_key, args.batch_size, args.epochs, args.zeros,
-                     args.telluric_file, args.finetune_model, args.num_gpu, args.model_type)
+                     args.telluric_file, args.finetune_model, args.num_gpu, args.model_type, args.val_data_path,
+                     args.hardmine)
 else:
     write_script(output_job_path, args.data_path, args.train_script, args.virtual_env, args.num_train, args.targets,
                  args.save_folder, args.spec_key, args.batch_size, args.epochs, args.zeros, args.telluric_file,
-                 args.finetune_model, args.num_gpu, args.model_type)
+                 args.finetune_model, args.num_gpu, args.model_type, args.val_data_path, args.hardmine)
