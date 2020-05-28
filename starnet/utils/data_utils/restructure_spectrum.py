@@ -1,5 +1,6 @@
 import astropy
 import numpy as np
+import numpy.ma as ma
 import multiprocessing
 from astropy.stats import sigma_clip
 from pysynphot import observation
@@ -8,6 +9,7 @@ from spectres import spectres
 import scipy
 from contextlib import contextmanager
 from scipy import interpolate
+import time
 
 from starnet.utils.data_utils.augment import get_noise_of_segments
 
@@ -128,7 +130,45 @@ def asymmetric_sigmaclip1D(flux, sigma_upper=2.0, sigma_lower=0.5):
     return sigmaclip_flux
 
 
-def gaussian_smooth_continuum1D(flux, wave_grid, err=None):
+def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=4):
+
+    # Mask the flux array according to the error array
+    if err is not None:
+        flux = ma.array(flux, mask=err)
+    else:
+        flux = ma.array(flux, mask=np.zeros(len(flux)))
+
+    # Calculate the Gaussian kernel with a given sigma (in Angstroms), cutting it off at sigma_cutoff*sigma
+    dx = wave_grid[1] - wave_grid[0]
+    gx = np.arange(-sigma_cutoff * sigma, sigma_cutoff * sigma, dx)
+    if len(gx) % 2 == 0:
+        gx = np.arange(-sigma_cutoff * sigma, sigma_cutoff * sigma + dx, dx)
+    gaussian = np.exp(-(gx / sigma) ** 2)
+
+    # Determine the sum of the Gaussian kernel when centered on different points along the flux array (only
+    # taking into account the overlapping regions)
+    sum_gaussian = np.sum(gaussian)
+    sums = []
+    if len(gaussian) < len(flux):
+        for i in range(int(len(gaussian) / 2)):
+            sums.append(np.sum(gaussian[int(len(gaussian) / 2) - i:]))
+        for i in range(len(flux) - len(gaussian)):
+            sums.append(sum_gaussian)
+        for i in range(int(len(gaussian) / 2) + 1):
+            sums.append(np.sum(gaussian[:len(gaussian) - i]))
+    else:
+        # TODO
+        raise Exception('Gaussian kernel longer than flux array, this is not implemented yet. Choose a'
+                        ' smaller sigma or smaller sigma cutoff')
+        # for i in range(len(flux)):
+        #    sums.append(gaussian[])
+
+    # Convolve the Gaussian with the flux array, normalizing each point
+    result = np.convolve(flux.filled(0), gaussian, mode="same") / sums
+
+    return result
+
+def gaussian_smooth_continuum_old(flux, wave_grid, err=None):
 
     W = 50  # sigma of 50 Angstroms for the Gaussian kernel
     cont = []
@@ -145,27 +185,27 @@ def gaussian_smooth_continuum1D(flux, wave_grid, err=None):
 
 
 def fit_continuum(flux, wav, err=None, line_regions=None, segments_step=10, sigma_upper=2.0,
-                  sigma_lower=0.5, fit='asym_sigmaclip', j=0):
+                  sigma_lower=0.5, sigma_gaussian=50, fit='asym_sigmaclip', spline_fit=20):
     flux_copy = np.copy(flux)
 
-    # Create an array of indices that segment the flux array in steps of segments_step [Angstroms]
-    segments = range(0, len(wav), int(segments_step / (wav[1] - wav[0])))
-    segments = list(segments)
-    segments.append(len(wav))
-
-    # Initialize continuum array
-    cont_array = np.empty(len(wav))
-    cont_array[:] = np.nan
-
-    # Mask line regions
-    if line_regions is not None:
-        for lower_wl, upper_wl in line_regions:
-            mask = (wav > lower_wl) & (wav < upper_wl)
-            flux_copy[mask] = np.nan
-
     if fit.lower() == 'gaussian_smooth':
-        cont_array = gaussian_smooth_continuum1D(flux_copy, wav, err)
+        cont_array = gaussian_smooth_continuum(flux_copy, wav, err, sigma=sigma_gaussian)
     elif fit.lower() in ['asym_sigmaclip', 'c_sigmaclip']:
+        # Create an array of indices that segment the flux array in steps of segments_step [Angstroms]
+        segments = range(0, len(wav), int(segments_step / (wav[1] - wav[0])))
+        segments = list(segments)
+        segments.append(len(wav))
+
+        # Initialize continuum array
+        cont_array = np.empty(len(wav))
+        cont_array[:] = np.nan
+
+        # Mask line regions
+        if line_regions is not None:
+            for lower_wl, upper_wl in line_regions:
+                mask = (wav > lower_wl) & (wav < upper_wl)
+                flux_copy[mask] = np.nan
+
         # Determine continuum level in each segment
         for k in range(len(segments) - 1):
             flux_segment = flux_copy[segments[k]:segments[k + 1]]
@@ -174,6 +214,7 @@ def fit_continuum(flux, wav, err=None, line_regions=None, segments_step=10, sigm
             if fit == 'asym_sigmaclip':
                 cont_ = asymmetric_sigmaclip1D(flux=flux_segment, sigma_upper=sigma_upper,
                                                sigma_lower=sigma_lower)
+
             elif fit == 'c_sigmaclip':
                 rms_noise = get_noise_of_segments(flux_copy, segments)
                 cont_ = c_sigmaclip1D(flux=flux_segment, rms_noise=rms_noise)
@@ -203,26 +244,44 @@ def fit_continuum(flux, wav, err=None, line_regions=None, segments_step=10, sigm
             prev_val = val
 
         # Fit a spline to the found continuum
-        t = np.linspace(wav[0], wav[-1], 20)
+        t = np.linspace(wav[0], wav[-1], spline_fit)
         tck = interpolate.splrep(wav, cont_array, t=t[1:-1])
         cont_array = interpolate.splev(wav, tck, der=0)
     else:
         raise ValueError('{} continuum method not recognized'.format(fit))
 
-    return cont_array, j
+    return cont_array
 
 
-def continuum_normalize(flux, wav, err=None, line_regions=None, segments_step=10, fit='asym_sigmaclip',
-                        sigma_upper=2.0, sigma_lower=0.5):
-    flux_copy = np.copy(flux)
-    cont, _ = fit_continuum(flux_copy, wav, err, line_regions, segments_step, sigma_upper, sigma_lower, fit=fit)
-    norm_flux = flux_copy / cont
+def continuum_normalize(flux, wav, err=None, line_regions=None, segments_step=10,
+                        sigma_upper=2.0, sigma_lower=0.5, sigma_gaussian=50, fit='asym_sigmaclip', spline_fit=20):
 
-    return norm_flux, cont
+    if flux is None:
+        return None
+    else:
+        flux_copy = np.copy(flux)
+
+        if len(np.shape(flux_copy)) == 1:
+            cont = fit_continuum(flux_copy, wav, err, line_regions, segments_step,
+                                 sigma_upper, sigma_lower, sigma_gaussian, fit, spline_fit)
+            norm_flux = flux_copy / cont
+        else:
+            norm_flux = []
+            for i in range(np.shape(flux)[0]):
+                if err is not None:
+                    cont_ = fit_continuum(flux_copy[i], wav, err[i], line_regions, segments_step,
+                                          sigma_upper, sigma_lower, sigma_gaussian, fit, spline_fit)
+                else:
+                    cont_ = fit_continuum(flux_copy[i], wav, err, line_regions, segments_step,
+                                          sigma_upper, sigma_lower, sigma_gaussian, fit, spline_fit)
+                norm_flux.append(flux_copy[i] / cont_)
+            norm_flux = np.asarray(norm_flux)
+
+        return norm_flux
 
 
-def continuum_normalize_parallel(spectra, wav, err=None, line_regions=None, segments_step=10, fit='asym_sigmaclip',
-                                 sigma_upper=2.0, sigma_lower=0.5):
+def continuum_normalize_parallel(spectra, wav, err=None, line_regions=None, segments_step=10,
+                                 sigma_upper=2.0, sigma_lower=0.5, sigma_gaussian=50, fit='asym_sigmaclip'):
     @contextmanager
     def poolcontext(*args, **kwargs):
         pool = multiprocessing.Pool(*args, **kwargs)
@@ -234,12 +293,12 @@ def continuum_normalize_parallel(spectra, wav, err=None, line_regions=None, segm
     pool_size = num_cpu if num_spec >= num_cpu else num_spec
 
     pool_arg_list = [(spectra[i], wav, err, line_regions,
-                      segments_step, fit, sigma_upper,
-                      sigma_lower) for i in range(num_spec)]
+                      segments_step, sigma_upper,
+                      sigma_lower, sigma_gaussian, fit) for i in range(num_spec)]
     with poolcontext(processes=pool_size) as pool:
         results = pool.starmap(continuum_normalize, pool_arg_list)
 
-    norm_fluxes = [result[0] for result in results]
+    norm_fluxes = [result for result in results]
 
     return norm_fluxes
 

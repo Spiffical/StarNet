@@ -28,10 +28,13 @@ def get_noise_of_segments(flux, segments):
     return np.mean(noise_array)
 
 
-def add_noise(x, noise):
+def add_noise(x, noise=0.07):
 
-    noise_factor = noise*np.median(x)
-    x += noise_factor * np.random.normal(loc=0.0, scale=1.0, size=x.shape) 
+    if type(noise) == float or type(noise) == int or type(noise) == np.float64:
+        noise_factor = noise*np.median(x)
+        x += noise_factor * np.random.normal(loc=0.0, scale=1.0, size=x.shape)
+    else:
+        raise ValueError('Noise parameter must be a float or integer')
     return x
 
 
@@ -81,31 +84,6 @@ def add_zeros_global_error(x, error_indx):
     for item in x:
         item[error_indx] = 0
     return x
-
-
-def rebin_old(new_wav, old_wav, flux):
-
-    # Ensure the new wavelength grid falls within the old wavelength grid (need for spectres resampling function,
-    # and unfortunately the code requires that the endpoints of the wavelength arrays cannot even be identical, the
-    # new wavelengths must have a larger minimum value and a smaller maximum value)
-    lhs_new = new_wav[0]
-    lhs_old = old_wav[0]
-    rhs_new = new_wav[-1]
-    rhs_old = old_wav[-1]
-
-    if lhs_new <= lhs_old and rhs_new <= rhs_old:
-        indices = new_wav >= lhs_old
-        new_wav = new_wav[indices][1:-1]
-        flux = flux[indices][1:-1]
-    elif lhs_new >= lhs_old and rhs_new >= rhs_old:
-        indices = new_wav <= rhs_old
-        new_wav = new_wav[indices][1:-1]
-        flux = flux[indices][1:-1]
-
-    # Call the spectres function to resample the input spectrum or spectra to the new wavelength grid
-    spec_resample = spectres(new_wav, old_wav, flux)
-
-    return spec_resample
 
 
 def convolve_spectrum(waveobs, flux, err, to_resolution, from_resolution=None):

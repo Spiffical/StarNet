@@ -238,6 +238,10 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
     elif grid_name.lower() == 'ferre':
         with h5py.File(file_path, 'r') as f:
             wave_grid_synth = f['wave_grid'][:]
+    elif grid_name.lower() == 'nlte':
+        # Get wavelength
+        spec_data = np.genfromtxt(file_path)
+        wave_grid_synth = spec_data[:, 0]
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
                          '(phoenix, intrigoss, or ambre)'.format(grid_name))
@@ -245,7 +249,7 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
     return wave_grid_synth
 
 
-def get_synth_spec_data(file_path, grid_name='phoenix'):
+def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_flux=True):
     """
     Given the path of a spectrum file and the grid of synthetic spectra you're working with (phoenix, intrigoss, ambre),
     this function will grab the flux and stellar parameters
@@ -256,36 +260,42 @@ def get_synth_spec_data(file_path, grid_name='phoenix'):
     :return: flux and stellar parameters of spectrum file
     """
 
+    # Initialize values
+    teff, logg, m_h, a_m, vt, vsini = np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+    flux = None
+
     if grid_name.lower() == 'phoenix':
+
         with pyfits.open(file_path) as hdulist:
-            flux = hdulist[0].data
+            if get_flux:
+                flux = hdulist[0].data
             param_data = hdulist[0].header
             teff = param_data['PHXTEFF']
             logg = param_data['PHXLOGG']
             m_h = param_data['PHXM_H']
             a_m = param_data['PHXALPHA']
             vt = param_data['PHXXI_L']
-            params = [teff, logg, m_h, a_m, vt]
     elif grid_name.lower() == 'intrigoss':
         with pyfits.open(file_path) as hdulist:
-            flux = hdulist[1].data['surface_flux']
+            if get_flux:
+                flux = hdulist[1].data['surface_flux']
             param_data = hdulist[0].header
             teff = param_data['TEFF']
             logg = param_data['LOG_G']
             m_h = param_data['FEH']
             a_m = param_data['ALPHA']
             vt = param_data['VT']
-            params = [teff, logg, m_h, a_m, vt]
     elif grid_name.lower() == 'ferre':
         with h5py.File(file_path, 'r') as f:
-            indx = random.choice(range(0, len(f['teff'][:])))
-            flux = f['spectra'][indx]
-            teff = f['teff'][indx]
-            logg = f['logg'][indx]
-            m_h = f['fe_h'][indx]
+            if ferre_indx is np.nan:
+                ferre_indx = random.choice(range(0, len(f['teff'][:])))
+            if get_flux:
+                flux = f['spectra'][ferre_indx]
+            teff = f['teff'][ferre_indx]
+            logg = f['logg'][ferre_indx]
+            m_h = f['fe_h'][ferre_indx]
             a_m = np.nan
             vt = np.nan
-            params = [teff, logg, m_h, a_m, vt]
     elif grid_name.lower() == 'ambre':
         filename = os.path.basename(file_path)
         teff = float(filename[1:5])
@@ -302,13 +312,42 @@ def get_synth_spec_data(file_path, grid_name='phoenix'):
             a_m = -1 * float(filename[30:34])
         else:
             a_m = float(filename[30:34])
+        if get_flux:
+            flux = np.genfromtxt(file_path, usecols=-1)
+    elif grid_name.lower() == 'nlte':
+        # Get header
+        with open(file_path) as file:
+            header_data = [next(file) for x in range(10)]
 
-        params = [teff, logg, m_h, a_m, vt]
+        # Get spectrum and wavelength
+        if get_flux:
+            spec_data = np.genfromtxt(file_path)
+            flux = spec_data[:, 1]
 
-        flux = np.genfromtxt(file_path, usecols=-1)
+        # Collect parameters
+        param_string = header_data[1].strip('#\n')
+        params = [float(s) for s in param_string.split()]
+        teff, logg, m_h, vt, macro, vsini = params[0], params[1], params[2], params[3], params[4], params[5]
+
+        # Parse out abundances
+        atomic_number_string, abundance_string = header_data[8].strip('#\n').split(':')
+        #atomic_numbers = [int(s) for s in atomic_number_string[1:].split()]
+        abundances = [float(s) for s in abundance_string[1:].split()]
+
+        # For this particular case, all abundances varied were alpha. Just grab first abundance
+        a_m = abundances[0]
+
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
-                         '(phoenix, intrigoss, or ambre)'.format(grid_name))
+                         '(phoenix, intrigoss, ambre, ferre, or nlte)'.format(grid_name))
+
+    # Create dictionary of values
+    params = {'teff': teff,
+              'logg': logg,
+              'm_h': m_h,
+              'a_m': a_m,
+              'vt': vt,
+              'vrot': vsini}
 
     return flux, params
 
