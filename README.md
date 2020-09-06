@@ -22,5 +22,15 @@ python /path/to/starnet/train_StarNet.py \
 NOTE: the `--targets` and `--spec_key` arguments expect the keywords that are used in your `training_dataset.h5` file to store the training labels and training features, respectively.
 
 
+## Citing this work
 
+Here's the BibTeX:
 
+```
+@article{bialek2020assessing,
+  title={Assessing the performance of LTE and NLTE synthetic stellar spectra in a machine learning framework},
+  author={Bialek, Spencer and Fabbro, S{\'e}bastien and Venn, Kim A and Kumar, Nripesh and O’Briain, Teaghan and Yi, Kwang Moo},
+  journal={Monthly Notices of the Royal Astronomical Society},
+  year={2020}
+}
+```
