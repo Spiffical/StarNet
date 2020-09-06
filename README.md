@@ -5,7 +5,7 @@ Harnessing the power of deep learning to accurately and efficiently predict cruc
 
 ## Training StarNet
 
-A script has been provided [(`starnet/train_StarNet.py`)](https://github.com/Spiffical/StarNet/blob/master/starnet/train_StarNet.py) to make training StarNet simple. An example of how to use it to train the basic StarNet2017 architecture on a dataset named `training_dataset.h5` to predict the parameters `[T_eff, logg, [M/H], [alpha/M]`:
+A script has been provided [(`starnet/train_StarNet.py`)](https://github.com/Spiffical/StarNet/blob/master/starnet/train_StarNet.py) to make training StarNet simple. An example of how to use it to train the basic StarNet2017 architecture on a dataset named `training_dataset.h5` to predict the parameters `T_eff, logg, [M/H], [alpha/M]`:
 
 ```
 python /path/to/starnet/train_StarNet.py \
