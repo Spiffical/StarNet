@@ -8,7 +8,7 @@ import numpy as np
 from keras.utils.data_utils import GeneratorEnqueuer
 from keras.utils.data_utils import OrderedEnqueuer
 
-from starnet.utils.data_utils.augment import add_noise, add_zeros, \
+from starnet.utils.data_utils.preprocess_spectra import add_noise, add_zeros, \
     add_zeros_global_error, telluric_mask
 from starnet.utils.data_utils.loading import load_batch_from_h5
 

@@ -2,6 +2,8 @@ import numpy as np
 import h5py
 import random
 import os
+import glob
+import zipfile
 from astropy.io import fits as pyfits
 
 
@@ -19,7 +21,7 @@ def collect_file_list(grid_name, spec_dir):
 
             # Iterate through files
             for file in files:
-                if '_N' in file and 'test' not in root:
+                if '_N' in file:
                     filepath = os.path.join(root, file)
                     file_list.append(filepath)
         return file_list
@@ -196,7 +198,7 @@ def get_synth_wavegrid(file_path, grid_name='intrigoss'):
     return wave_grid_synth
 
 
-def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_flux=True):
+def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_flux=True, get_wavegrid=True):
     """
     Given the path of a spectrum file and the grid of synthetic spectra you're working with (phoenix, intrigoss, ambre),
     this function will grab the flux and stellar parameters
@@ -210,6 +212,7 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
     # Initialize values
     teff, logg, m_h, a_m, vt, vsini = np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
     flux = None
+    wave_grid = None
 
     if grid_name.lower() == 'phoenix':
 
@@ -226,6 +229,8 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
         with pyfits.open(file_path) as hdulist:
             if get_flux:
                 flux = hdulist[1].data['surface_flux']
+            if get_wavegrid:
+                wave_grid = hdulist[1].data['wavelength']
             param_data = hdulist[0].header
             teff = param_data['TEFF']
             logg = param_data['LOG_G']
@@ -238,10 +243,19 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
                 ferre_indx = random.choice(range(0, len(f['teff'][:])))
             if get_flux:
                 flux = f['spectra'][ferre_indx]
+            if get_wavegrid:
+                wave_grid = f['wave_grid'][:]
             teff = f['teff'][ferre_indx]
             logg = f['logg'][ferre_indx]
             m_h = f['fe_h'][ferre_indx]
-            a_m = np.nan
+            if m_h <= -1.5:
+                a_m = 0.5
+            elif m_h >= 0:
+                a_m = 0
+            elif m_h == -1.0:
+                a_m = 0.33
+            elif m_h == -0.5:
+                a_m = 0.17
             vt = np.nan
     elif grid_name.lower() == 'ambre':
         filename = os.path.basename(file_path)
@@ -260,16 +274,20 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
         else:
             a_m = float(filename[30:34])
         if get_flux:
-            flux = np.genfromtxt(file_path, usecols=-1)
-    elif grid_name.lower() == 'nlte':
+            flux = np.genfromtxt(file_path, usecols=[-1, ])
+        if get_wavegrid:
+            wave_grid = np.genfromtxt(file_path, usecols=[0, ])
+    elif grid_name.lower() == 'nlte' or grid_name.lower() == 'mpia':
         # Get header
         with open(file_path) as file:
             header_data = [next(file) for x in range(10)]
 
-        # Get spectrum and wavelength
+        # Get spectrum and wvl
+        spec_data = np.genfromtxt(file_path)
         if get_flux:
-            spec_data = np.genfromtxt(file_path)
             flux = spec_data[:, 1]
+        if get_wavegrid:
+            wave_grid = spec_data[:, 0]
 
         # Collect parameters
         param_string = header_data[1].strip('#\n')
@@ -286,7 +304,7 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
 
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
-                         '(phoenix, intrigoss, ambre, ferre, or nlte)'.format(grid_name))
+                         '(phoenix, intrigoss, ambre, ferre, mpia, or nlte)'.format(grid_name))
 
     # Create dictionary of values
     params = {'teff': teff,
@@ -296,6 +314,17 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
               'vt': vt,
               'vrot': vsini}
 
-    return flux, params
+    return flux, wave_grid, params
 
+def get_rave_data(path):
+    archive = zipfile.ZipFile(path, 'r')
+    file_list = archive.namelist()
+
+    all_rave_data = []
+    for f in file_list:
+        data = np.fromstring(archive.read(f), dtype=float, sep='\n')
+        wav_flux_2d = np.reshape(data, (2, 980), order='F').transpose()  # two columns (wav + flux)
+        all_rave_data.append(wav_flux_2d)
+
+        return all_rave_data
 
