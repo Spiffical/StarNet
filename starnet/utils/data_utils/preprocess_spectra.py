@@ -6,6 +6,7 @@ import numpy.ma as ma
 import scipy
 import time
 import multiprocessing
+import astropy
 from astropy.stats import sigma_clip
 from pysynphot import observation
 from pysynphot import spectrum as pysynspec
@@ -103,7 +104,21 @@ def add_zeros_global_error(x, error_indx):
     return x
 
 
-def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=20000):
+def add_trailing_zeros(spectrum, max_left=0, max_right=0):
+
+    sp = np.copy(spectrum)
+
+    num_left_trailing = np.random.randint(0, max_left)
+    num_right_trailing = np.random.randint(0, max_right)
+
+    sp[:num_left_trailing] = 0
+    sp[-num_right_trailing:] = 0
+
+    return sp
+
+
+def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=20000, trailing_zeros_l=0,
+                     trailing_zeros_r=0):
     """
 
     :param flux: an array of flux values
@@ -113,6 +128,8 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     :param noise: value of noise (fraction of flux value) to apply to flux array
     :param vrad: value of radial velocity (km/s) to apply to flux array
     :param to_res: resolution of output flux array requested
+    :param trailing_zeros_l: maximum # of trailing zeros to add on left end of spectrum
+    :param trailing_zeros_r: maximum # of trailing zeros to add on right end of spectrum
 
     :return: modified flux array
     """
@@ -138,10 +155,15 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     # Add noise
     flux = add_noise(flux, noise)
 
+    # Add trailing zeros
+    if trailing_zeros_l != 0 or trailing_zeros_r !=0:
+        flux = add_trailing_zeros(flux, trailing_zeros_l, trailing_zeros_r)
+
     return flux
 
 
-def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_list, instrument_res, ):
+def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_list, instrument_res,
+                             trailing_zeros_l=0, trailing_zeros_r=0):
     """
     Augments (in parallel) a list of spectra with rotational velocity, radial velocity, noise, and resolution
     degradation.
@@ -153,6 +175,8 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     :param noise_list: a list, same length as spectra list, of maximum noise (fraction of flux) to apply
     :param vrad_list: a list, same length as spectra list, of radial velocities (km/s) to apply
     :param instrument_res: instrumental resolution to degrade the synthetic spectra to
+    :param trailing_zeros_l: maximum # of trailing zeros to add on left end of spectrum
+    :param trailing_zeros_r: maximum # of trailing zeros to add on right end of spectrum
 
     :return: a list of modified input spectra
     """
@@ -196,7 +220,8 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     #                              num_procs=10)
     #     spectra[i] = flux
 
-    pool_arg_list = [(spectra[i], wav[i], new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res)
+    pool_arg_list = [(spectra[i], wav[i], new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res,
+                      trailing_zeros_l, trailing_zeros_r)
                      for i in range(num_spectra)]
     with poolcontext(processes=pool_size) as pool:
         results = pool.starmap(augment_spectrum, pool_arg_list)
@@ -268,21 +293,50 @@ def asymmetric_sigmaclip1D(flux, sigma_upper=2.0, sigma_lower=0.5):
     flux_copy = np.copy(flux)
 
     # Iteratively sigma clip the flux array
-    filtered_data = sigma_clip(flux_copy, sigma_lower=sigma_lower, sigma_upper=sigma_upper,
-                               iters=None)
+    astropy_version = astropy.__version__
+    if astropy_version in ['3.1', '3.0.5', '2.0.16']:
+        filtered_data = sigma_clip(flux_copy, sigma_lower=sigma_lower, sigma_upper=sigma_upper,
+                                   iters=None)
+    else:
+        filtered_data = sigma_clip(flux_copy, sigma_lower=sigma_lower, sigma_upper=sigma_upper,
+                                   maxiters=None)
 
     sigmaclip_flux = np.mean(filtered_data)
 
     return sigmaclip_flux
 
 
+def convolve(a, b, contagious=False):
+    data = np.convolve(a.data, b.data, mode='same')
+    if not contagious:
+        # results which are not contributed to by any pair of valid elements
+        mask = ~np.convolve(~a.mask, ~b.mask, mode='same')
+    else:
+        # results which are contributed to by either item in any pair being invalid
+        mask = np.convolve(a.mask, np.ones(b.shape, dtype=np.bool), mode='same')
+        mask |= np.convolve(np.ones(a.shape, dtype=np.bool), b.mask, mode='same')
+    return ma.masked_array(data, mask)
+
+
 def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=4):
 
     # Mask the flux array according to the error array
     if err is not None:
-        flux = ma.array(flux, mask=err)
+        mask = err
     else:
-        flux = ma.array(flux, mask=np.zeros(len(flux)))
+        mask = np.zeros(len(flux))
+    mask[flux == 0] = 1
+    flux = ma.array(flux, mask=mask)
+
+    # Find the indices for where leading/trailing zeros end/begin
+    m = flux != 0
+    leading_indx, trailing_indx = m.argmax() - 1, m.size - m[::-1].argmax()
+    leading_indx += 1
+    trailing_indx = trailing_indx if trailing_indx != len(flux) else trailing_indx-1
+
+    # Trim the leading/trailing zeros)
+    trimmed_flux = flux[leading_indx:trailing_indx]
+    #trimmed_mask = mask[leading_indx:trailing_indx]
 
     # Calculate the Gaussian kernel with a given sigma (in Angstroms), cutting it off at sigma_cutoff*sigma
     dx = wave_grid[1] - wave_grid[0]
@@ -295,13 +349,27 @@ def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=
     # taking into account the overlapping regions)
     sum_gaussian = np.sum(gaussian)
     sums = []
-    if len(gaussian) < len(flux):
+    if len(gaussian) < len(trimmed_flux):
         for i in range(int(len(gaussian) / 2)):
             sums.append(np.sum(gaussian[int(len(gaussian) / 2) - i:]))
-        for i in range(len(flux) - len(gaussian)):
+        for i in range(len(trimmed_flux) - len(gaussian)):
             sums.append(sum_gaussian)
         for i in range(int(len(gaussian) / 2) + 1):
             sums.append(np.sum(gaussian[:len(gaussian) - i]))
+    # if len(gaussian) < len(trimmed_flux):
+    #     for i in range(int(len(gaussian) / 2)):
+    #         temp_mask = trimmed_mask[:int(len(gaussian) / 2) + i + 1]
+    #         sums.append(np.sum(ma.array(gaussian[int(len(gaussian) / 2) - i:], mask=temp_mask)))
+    #         ind += 1
+    #     for i in range(len(trimmed_flux) - len(gaussian)):
+    #         temp_mask = trimmed_mask[ind - int(len(gaussian) / 2):ind+int(len(gaussian) / 2)+1]
+    #         #sums.append(sum_gaussian)
+    #         sums.append(np.sum(ma.array(gaussian, mask=temp_mask)))
+    #         ind += 1
+    #     for i in range(int(len(gaussian) / 2) + 1):
+    #         temp_mask = trimmed_mask[-(len(gaussian) - i):]
+    #         sums.append(np.sum(ma.array(gaussian[:len(gaussian) - i], mask=temp_mask)))
+    #         ind += 1
     else:
         # TODO
         raise Exception('Gaussian kernel longer than flux array, this is not implemented yet. Choose a'
@@ -309,8 +377,13 @@ def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=
         # for i in range(len(flux)):
         #    sums.append(gaussian[])
 
+
     # Convolve the Gaussian with the flux array, normalizing each point
-    result = np.convolve(flux.filled(0), gaussian, mode="same") / sums
+    result = np.convolve(trimmed_flux, gaussian, mode="same") / sums
+    #result = convolve(trimmed_flux, ma.array(gaussian, mask=np.zeros(len(gaussian)))) / sums
+
+    # Add the leading/trailing zeros back in
+    result = np.pad(result, (leading_indx, len(flux) - trailing_indx), 'constant')
 
     return result
 
@@ -382,7 +455,9 @@ def fit_continuum(flux, wav, err=None, line_regions=None, segments_step=10, sigm
         leading_indx += 1
 
         # Fit a spline to the found continuum (ignoring the leading/trailing zeros)
-        t = np.linspace(wav[leading_indx], wav[trailing_indx], spline_fit)
+        leading_wav = wav[leading_indx]
+        trailing_wav = wav[trailing_indx] if trailing_indx != len(wav) else wav[-1]
+        t = np.linspace(leading_wav, trailing_wav, spline_fit)
         w = np.ones(len(wav))[leading_indx:trailing_indx]
         w[cont_array[leading_indx:trailing_indx] == 0] = 0
         tck = interpolate.splrep(wav[leading_indx:trailing_indx],
@@ -613,8 +688,8 @@ def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max
                    min_feh=-np.Inf, max_afe=np.Inf, min_afe=-np.Inf):
 
     # parse the wave grid to obtain the red and blue regions
-    wave_grid_obs_blue = wave_grid_obs[:1854]
-    wave_grid_obs_red = wave_grid_obs[1854:]
+    wave_grid_obs_blue = wave_grid_obs[:1980]
+    wave_grid_obs_red = wave_grid_obs[1980:]
 
     # This next block of code will iteratively select a random file from the supplied list of synthetic spectra files,
     # extract the flux and stellar parameters from it, and if it falls within the requested parameter space, will
@@ -659,10 +734,14 @@ def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max
         t1 = time.time()
         spectra_blue = augment_spectra_parallel(spectra_blue, wavegrid_synth_list_blue,
                                                 wave_grid_obs_blue, vrot_list, noise_list, vrad_list,
-                                                instrument_res=1300)
+                                                instrument_res=1300,
+                                                trailing_zeros_l=50,
+                                                trailing_zeros_r=133)
         spectra_red = augment_spectra_parallel(spectra_red, wavegrid_synth_list_red,
                                                wave_grid_obs_red, vrot_list, noise_list, vrad_list,
-                                               instrument_res=11000)
+                                               instrument_res=11000,
+                                               trailing_zeros_l=124,
+                                               trailing_zeros_r=222)
         print('Total modify time: %.1f s' % (time.time() - t1))
 
         # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
