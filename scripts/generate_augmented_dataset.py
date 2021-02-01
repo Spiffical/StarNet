@@ -97,7 +97,7 @@ def main():
         t0_batch = time.time()
         print('Creating a batch of spectra...')
         if args.telescope.lower() == 'aat':
-            spec_asym, params = preprocess_batch_of_aat_spectra(file_list, wave_grid_obs,
+            spec_asym, spec_gaussian, params = preprocess_batch_of_aat_spectra(file_list, wave_grid_obs,
                                                                 batch_size=args.batch_size,
                                                                 max_vrot_to_apply=args.rotational_vel,
                                                                 max_vrad_to_apply=args.radial_vel,
@@ -138,6 +138,7 @@ def main():
         print('Saving {} to {}'.format(unique_filename, args.save_dir))
         with h5py.File(save_path, 'w') as f:
             f.create_dataset('spectra_asymnorm', data=np.asarray(spec_asym))
+            f.create_dataset('spectra_gaussiannorm', data=np.asarray(spec_gaussian))
             f.create_dataset('teff', data=np.asarray(teff))
             f.create_dataset('logg', data=np.asarray(logg))
             f.create_dataset('M_H', data=np.asarray(m_h))
