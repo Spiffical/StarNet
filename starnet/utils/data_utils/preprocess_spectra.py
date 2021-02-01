@@ -104,6 +104,13 @@ def add_zeros_global_error(x, error_indx):
     return x
 
 
+def apply_global_error_mask(x, global_mask):
+
+    for item in x:
+        item = item*global_mask
+    return x
+
+
 def add_trailing_zeros(spectrum, max_left=0, max_right=0):
 
     sp = np.copy(spectrum)
@@ -135,14 +142,14 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     """
 
     # Degrade resolution and apply rotational broadening
-    epsilon = random.uniform(0, 1.)
-    _, _, flux = convolution(wav=wav,
-                             flux=flux,
-                             vsini=rot,
-                             R=to_res,
-                             epsilon=epsilon,
-                             normalize=True,
-                             num_procs=10)
+    #epsilon = random.uniform(0, 1.)
+    #_, _, flux = convolution(wav=wav,
+    #                         flux=flux,
+    #                         vsini=rot,
+    #                         R=to_res,
+    #                         epsilon=epsilon,
+    #                         normalize=True,
+    #                         num_procs=10)
 
     # Add radial velocity
     if vrad != 0:
@@ -193,32 +200,16 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     print('[INFO] Pool size: {}'.format(pool_size))
 
     # Degrade resolution and apply rotational broadening
-    # for i in range(len(spectra)):
-    #     dw = wav[i][1] - wav[i][0]
-    #     dw_new = new_wav[1] - new_wav[0]
-    #
-    #     dw_intermed = (dw + dw_new) / 2.
-    #     num_wvl_intermed = int((wav[i][-1] - wav[i][0]) / dw_intermed)
-    #     wav_intermed = np.asarray([wav[i][0] + dw_intermed*j for j in range(num_wvl_intermed)])
-    #
-    #     print('[INTERMEDIATE STEP] dw old: {}'.format(dw))
-    #     print('[INTERMEDIATE STEP] dw new: {}'.format(dw_new))
-    #     print('[INTERMEDIATE STEP] dw intermediate: {}'.format(dw_intermed))
-    #     print('[INTERMEDIATE STEP] shapes old/intermed: {}/{}'.format(np.shape(wav[i]), np.shape(wav_intermed)))
-    #
-    #     flux = rebin(wav_intermed, wav[i], spectra[i])
-    #     wav[i] = wav_intermed
-    #     spectra[i] = flux
-    #
-    #     epsilon = random.uniform(0, 1.)
-    #     _, _, flux = convolution(wav=wav[i],
-    #                              flux=spectra[i],
-    #                              vsini=vrot_list[i],
-    #                              R=instrument_res,
-    #                              epsilon=epsilon,
-    #                              normalize=True,
-    #                              num_procs=10)
-    #     spectra[i] = flux
+    for i in range(len(spectra)):
+        epsilon = random.uniform(0, 1.)
+        _, _, flux = convolution(wav=wav[i],
+                                flux=spectra[i],
+                                vsini=vrot_list[i],
+                                R=instrument_res,
+                                epsilon=epsilon,
+                                normalize=True,
+                                num_procs=10)
+        spectra[i] = flux
 
     pool_arg_list = [(spectra[i], wav[i], new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res,
                       trailing_zeros_l, trailing_zeros_r)
@@ -318,7 +309,7 @@ def convolve(a, b, contagious=False):
     return ma.masked_array(data, mask)
 
 
-def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=4):
+def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=3):
 
     # Mask the flux array according to the error array
     if err is not None:
@@ -372,6 +363,8 @@ def gaussian_smooth_continuum(flux, wave_grid, err=None, sigma=50, sigma_cutoff=
     #         ind += 1
     else:
         # TODO
+        print('Gaussian kernel: {}'.format(len(gaussian)))
+        print('Flux array: {}'.format(len(trimmed_flux)))
         raise Exception('Gaussian kernel longer than flux array, this is not implemented yet. Choose a'
                         ' smaller sigma or smaller sigma cutoff')
         # for i in range(len(flux)):
@@ -746,25 +739,29 @@ def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max
 
         # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
         t1 = time.time()
-        spectra_blue = continuum_normalize_parallel(spectra_blue, wave_grid_obs_blue,
+        spectra_blue_asym = continuum_normalize_parallel(spectra_blue, wave_grid_obs_blue,
                                                     line_regions=LINE_REGIONS,
                                                     segments_step=SEGMENTS_STEP,
                                                     fit='asym_sigmaclip',
                                                     sigma_upper=2.0, sigma_lower=0.5)
-        spectra_red = continuum_normalize_parallel(spectra_red, wave_grid_obs_red,
+        spectra_red_asym = continuum_normalize_parallel(spectra_red, wave_grid_obs_red,
                                                    line_regions=LINE_REGIONS,
                                                    segments_step=SEGMENTS_STEP,
                                                    fit='asym_sigmaclip',
                                                    sigma_upper=2.0, sigma_lower=0.5)
+        spectra_blue_gaussian = continuum_normalize_parallel(spectra_blue, wave_grid_obs_blue,
+                                                    fit='gaussian_smooth')
+        spectra_red_gaussian = continuum_normalize_parallel(spectra_red, wave_grid_obs_red,
+                                                   fit='gaussian_smooth')
         print('Total continuum time: %.2f s' % (time.time() - t1))
 
         # Remove spectra with mostly NaNs
         nan_indices_blue = []
-        for i, f in enumerate(spectra_blue):
+        for i, f in enumerate(spectra_blue_asym):
             if sum(np.isnan(f)) > 0.5 * len(f):
                 nan_indices_blue.append(i)
         nan_indices_red = []
-        for i, f in enumerate(spectra_red):
+        for i, f in enumerate(spectra_red_asym):
             if sum(np.isnan(f)) > 0.5 * len(f):
                 nan_indices_red.append(i)
         nan_indices = np.unique(np.append(nan_indices_blue, nan_indices_red))
@@ -772,11 +769,10 @@ def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max
         print('nan indices: {}'.format(nan_indices))
 
         if len(nan_indices) > 0:
-            spectra_blue = np.delete(spectra_blue, nan_indices)
-            spectra_red = np.delete(spectra_red, nan_indices)
-
-        print('Shape of blue/red spectra: {}/{}'.format(np.shape(spectra_blue), np.shape(spectra_red)))
-        spectra = np.concatenate((spectra_blue, spectra_red), axis=1)
+            spectra_blue_asym = np.delete(spectra_blue_asym, nan_indices)
+            spectra_red_asym = np.delete(spectra_red_asym, nan_indices)
+            spectra_blue_gaussian = np.delete(spectra_blue_gaussian, nan_indices)
+            spectra_red_gaussian = np.delete(spectra_red_gaussian, nan_indices)
 
         teff_list = np.delete(teff_list, nan_indices)
         logg_list = np.delete(logg_list, nan_indices)
@@ -787,7 +783,11 @@ def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max
         vrad_list = np.delete(vrad_list, nan_indices)
         noise_list = np.delete(noise_list, nan_indices)
 
+        print('Shape of blue/red spectra: {}/{}'.format(np.shape(spectra_blue_asym), np.shape(spectra_red_asym)))
+        spectra_asym = np.concatenate((spectra_blue_asym, spectra_red_asym), axis=1)
+        spectra_gaussian = np.concatenate((spectra_blue_gaussian, spectra_red_gaussian), axis=1)
+
         params = teff_list, logg_list, m_h_list, a_m_list, vt_list, vrot_list, vrad_list, noise_list
     else:
-        spectra, params = [], []
-    return spectra, params
+        spectra_asym, spectra_gaussian, params = [], [], []
+    return spectra_asym, spectra_gaussian, params
