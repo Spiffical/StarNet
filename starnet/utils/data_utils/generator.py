@@ -9,14 +9,15 @@ from keras.utils.data_utils import GeneratorEnqueuer
 from keras.utils.data_utils import OrderedEnqueuer
 
 from starnet.utils.data_utils.preprocess_spectra import add_noise, add_zeros, \
-    add_zeros_global_error, telluric_mask
+    add_zeros_global_error, telluric_mask, apply_global_error_mask
+
 from starnet.utils.data_utils.loading import load_batch_from_h5
 
 class DataGenerator(keras.utils.Sequence):
     'Generates data for Keras'
     def __init__(self, indices, data_filename, targetname, mu, sigma, spec_name, min_flux_value=0, 
                  max_flux_value=None, max_added_noise=None, max_fraction_zeros=None,
-                 err_indices=None, line_regions=None, segments_step=None, wav=None, telluric_mask_file=None, 
+                 global_err_mask=None, line_regions=None, segments_step=None, wav=None, telluric_mask_file=None,
                  batch_size=32):
         'Initialization'
         
@@ -32,7 +33,8 @@ class DataGenerator(keras.utils.Sequence):
         # Data augmentation stuff
         self.max_added_noise = max_added_noise
         self.max_fraction_zeros = max_fraction_zeros
-        self.err_indices = err_indices
+        #self.err_indices = err_indices
+        self.global_err_mask = global_err_mask
         self.line_regions = line_regions
         self.segments_step = segments_step
         self.min_flux_value = min_flux_value
@@ -81,8 +83,8 @@ class DataGenerator(keras.utils.Sequence):
         X = np.asarray(X)
         
         # Add zeroes according to a global error array
-        if self.err_indices is not None:
-            X = add_zeros_global_error(X, self.err_indices)
+        if self.global_err_mask is not None:
+            X = apply_global_error_mask(X, self.global_err_mask)
         
         # Zero out flux values below and above certain thresholds
         if self.max_flux_value is not None:
