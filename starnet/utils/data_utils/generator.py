@@ -1,5 +1,7 @@
-import os, sys
-sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#if not os.getenv('SLURM_TMPDIR'):
+#    sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#else:
+#    sys.path.insert(0, os.path.join(os.getenv('SLURM_TMPDIR'), 'StarNet'))
 
 import keras
 import time
@@ -8,8 +10,8 @@ import numpy as np
 from keras.utils.data_utils import GeneratorEnqueuer
 from keras.utils.data_utils import OrderedEnqueuer
 
-from starnet.utils.data_utils.preprocess_spectra import add_noise, add_zeros, \
-    add_zeros_global_error, telluric_mask, apply_global_error_mask
+from preprocess_spectra import add_noise, add_zeros, \
+    add_zeros_global_error, telluric_mask, apply_global_error_mask, mask_batch_of_spectra
 
 from starnet.utils.data_utils.loading import load_batch_from_h5
 
@@ -17,8 +19,8 @@ class DataGenerator(keras.utils.Sequence):
     'Generates data for Keras'
     def __init__(self, indices, data_filename, targetname, mu, sigma, spec_name, min_flux_value=0, 
                  max_flux_value=None, max_added_noise=None, max_fraction_zeros=None,
-                 global_err_mask=None, line_regions=None, segments_step=None, wav=None, telluric_mask_file=None,
-                 batch_size=32):
+                 global_err_mask=None, mask_list=None, line_regions=None, segments_step=None, wav=None, telluric_mask_file=None,
+                 batch_size=32, project=None):
         'Initialization'
         
         # Parameters for loading data
@@ -35,21 +37,27 @@ class DataGenerator(keras.utils.Sequence):
         self.max_fraction_zeros = max_fraction_zeros
         #self.err_indices = err_indices
         self.global_err_mask = global_err_mask
+        self.mask_list = mask_list
         self.line_regions = line_regions
         self.segments_step = segments_step
         self.min_flux_value = min_flux_value
         self.max_flux_value = max_flux_value
         self.wav = wav
         self.max_num_zeros = int(len(wav)*max_fraction_zeros)
+        self.project = 'weave_hr'
         
         # Telluric mask
         self.telluric_mask_file = telluric_mask_file
         self.telluric_mask = None
-        if self.telluric_mask_file is not None:
-            if self.wav is not None:
-                self.telluric_mask = telluric_mask(self.telluric_mask_file, self.wav)
-            else:
-                raise ValueError('Must supply wavelength array if masking tellurics!')
+        if self.telluric_mask_file is not None or self.telluric_mask_file != 'None':
+            #TODO get rid of awful try except statement here
+            try:
+                if self.wav is not None:
+                    self.telluric_mask = telluric_mask(self.telluric_mask_file, self.wav)
+                else:
+                    raise ValueError('Must supply wavelength array if masking tellurics!')
+            except:
+                pass
         
         # Generator stuff
         self.shuffle = True
@@ -78,32 +86,65 @@ class DataGenerator(keras.utils.Sequence):
         
         # Add noise to spectra if desired
         if self.max_added_noise is not None:
-            X = add_noise(X, self.max_added_noise)
+           X = add_noise(X, self.max_added_noise)
            
         X = np.asarray(X)
-        
+
+        # Zero out the NaN and inf values if they exist
+        X[np.isnan(X)] = 0
+        X[np.isinf(X)] = 0
+
         # Add zeroes according to a global error array
         if self.global_err_mask is not None:
-            X = apply_global_error_mask(X, self.global_err_mask)
+           X = apply_global_error_mask(X, self.global_err_mask)
         
         # Zero out flux values below and above certain thresholds
         if self.max_flux_value is not None:
-            X[X > self.max_flux_value]=0
+           X[X > self.max_flux_value]=0
         if self.min_flux_value is not None:
-            X[X < self.min_flux_value]=0
+           X[X < self.min_flux_value]=0
         
         # Inject zeros into the spectrum
         if self.max_fraction_zeros is not None:
-            X = add_zeros(X, self.max_num_zeros)
-                
-        if self.telluric_mask_file is not None and self.telluric_mask is None:
-            if self.wav is not None:
-                self.telluric_mask = telluric_mask(self.telluric_mask_file, self.wav)
-                X *= self.telluric_mask
-            else:
-                raise ValueError('Must supply wavelength array if masking tellurics!')
-        elif self.telluric_mask is not None:
-            X *= self.telluric_mask
+           X = add_zeros(X, self.max_num_zeros)
+
+        #TODO get rid of awful try except statement here
+        try:
+           if self.telluric_mask_file is not None and self.telluric_mask is None:
+               if self.wav is not None:
+                   self.telluric_mask = telluric_mask(self.telluric_mask_file, self.wav)
+                   X *= self.telluric_mask
+               else:
+                   raise ValueError('Must supply wavelength array if masking tellurics!')
+           elif self.telluric_mask is not None:
+              X *= self.telluric_mask
+        except:
+           pass
+
+        if self.mask_list is not None:
+            X = mask_batch_of_spectra(X, self.mask_list)
+
+        if type(self.project) == str:
+            if self.project.lower() == 'weave_hr':
+                for i, x in enumerate(X):
+                    blue_spectrum = x[:11880]
+                    green_spectrum = x[11880:25880]
+                    red_spectrum = x[25880:]
+                    full_spectrum = [blue_spectrum, green_spectrum, red_spectrum]
+
+                    # Determine which arms to keep
+                    keep_arms = np.random.randint(0, 2, 3)
+                    for j, keep_arm in enumerate(keep_arms):
+                        if keep_arm:
+                            pass
+                        else:
+                            # Replace arm with noise
+                            full_spectrum[j] = np.random.normal(1, .005, np.shape(full_spectrum[j]))
+
+                    X[i] = np.concatenate((full_spectrum[0], full_spectrum[1], full_spectrum[2]))
+
+
+        #X = X[:, :1980]
             
         return X
 
@@ -226,8 +267,8 @@ class DataGenerator_HardMining(keras.utils.Sequence):
     def augment_spectra(self, X):
 
         # Add noise to spectra if desired
-        if self.max_added_noise is not None:
-            X = add_noise(X, self.max_added_noise)
+        #if self.max_added_noise is not None:
+        #    X = add_noise(X, self.max_added_noise)
 
         X = np.asarray(X)
 
@@ -356,8 +397,8 @@ class DataGeneratorDeepEnsemble(keras.utils.Sequence):
     def augment_spectra(self, X):
 
         # Add noise to spectra if desired
-        if self.max_added_noise is not None:
-            X = add_noise(X, self.max_added_noise)
+        #if self.max_added_noise is not None:
+        #    X = add_noise(X, self.max_added_noise)
 
         X = np.asarray(X)
 

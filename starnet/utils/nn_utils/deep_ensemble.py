@@ -1,6 +1,9 @@
 import os
 import sys
-sys.path.insert(0, "{}/StarNet".format(os.getenv('HOME')))
+#if not os.getenv('SLURM_TMPDIR'):
+#    sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#else:
+#    sys.path.insert(0, os.path.join(os.getenv('SLURM_TMPDIR'), 'StarNet'))
 import numpy as np
 import glob
 import csv

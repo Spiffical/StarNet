@@ -1,5 +1,8 @@
 import os, sys
-sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#if not os.getenv('SLURM_TMPDIR'):
+#    sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#else:
+#    sys.path.insert(0, os.path.join(os.getenv('SLURM_TMPDIR'), 'StarNet'))
 import time
 import json
 import datetime
@@ -9,12 +12,13 @@ import tensorflow as tf
 import multiprocessing
 import h5py
 import csv
+import tensorflow.keras as tfk
 
-from starnet.utils.data_utils.generator import DataGenerator, DataGeneratorDeepEnsemble
+from starnet.utils.data_utils.generator import DataGenerator, DataGeneratorDeepEnsemble, DataGenerator_HardMining
 from starnet.utils.nn_utils.custom_callbacks import CustomModelCheckpoint, CustomReduceLROnPlateau
-from starnet.utils.nn_utils.custom_losses import gaussian_loss
-from starnet.utils.data_utils.loading import load_batch_from_h5, load_contiguous_slice_from_h5
-from starnet.utils.data_utils.augment import add_zeros, telluric_mask
+from starnet.utils.nn_utils.custom_losses import gaussian_loss, gaussian_loss_observed_val
+from starnet.utils.data_utils.loading import load_batch_from_h5, load_contiguous_slice_from_h5, load_data_from_h5
+from starnet.utils.data_utils.on_the_fly_augments import add_zeros, telluric_mask, apply_global_error_mask
 from keras.callbacks import EarlyStopping, CSVLogger
 from keras.optimizers import Adam
 from keras.regularizers import l2
@@ -22,6 +26,7 @@ from keras.models import load_model, Model
 from keras.layers import MaxPooling1D, Conv1D, Dense, Flatten, Input
 from keras import Model
 from keras.utils import multi_gpu_model
+
 
 from sklearn.model_selection import train_test_split
 
@@ -81,6 +86,9 @@ class BaseModel(object):
     """
 
     def __init__(self, targetname=['teff', 'logg', 'M_H'], input_shape=None):
+        self.session = tf.Session()
+        self.graph = tf.get_default_graph()
+
         self.folder_name = None
         self.model_parameter_filename = 'model_parameter.json'
         self.name = ''
@@ -133,6 +141,8 @@ class BaseModel(object):
         # These can be applied on the fly, during training
         self.max_frac_zeros = None  # Maximum fraction of spectrum to randomly assign zeros to
         self.telluric_mask_file = None  # File containing tulluric line information
+        self.global_err_mask = None # A global error mask
+        self.masks = None # List of masks to apply to spectra
 
         # Data parameters
         self.targetname = targetname
@@ -142,6 +152,7 @@ class BaseModel(object):
         self.input_shape = input_shape
         self.labels_shape = len(self.targetname)
         self.data_filename = ''
+        self.val_data_filename = ''
         self.data_folder = ''
         self.spec_name = ''
         self.mu = None
@@ -154,6 +165,7 @@ class BaseModel(object):
         self.use_val_generator = 'auto'  # ['false', 'true', or 'auto']
         self.min_flux_value = 0.0
         self.max_flux_value = None
+        self.use_hard_mining = False
 
         ### Others
         self.training_generator = None
@@ -167,6 +179,7 @@ class BaseModel(object):
         self.premade_batches = False
         self.use_multiprocessing = True
         self.num_gpu = 1
+        self.max_q = 0
 
     def get_wave_grid(self):
 
@@ -196,6 +209,7 @@ class BaseModel(object):
                     print('Input shape not given, attempting to retrieve from wavelength grid in h5 file: '
                           '{}...'.format(self.data_filename))
                     wave_grid = self.get_wave_grid()
+                    #wave_grid = wave_grid[:1980]
                     self.wav = wave_grid
             else:
                 pass
@@ -290,7 +304,8 @@ class BaseModel(object):
 
         return mu, sigma
 
-    def load_validation_dataset(self, use_val_generator):
+    def load_validation_dataset(self, use_val_generator='auto'):
+        #TODO move to loading.py
         """
         Keras has bugs with using a data generator with a validation set, often times resulting in the training
         process freezing at the end of an epoch. The validation set can be loaded directly into memory to avoid
@@ -299,40 +314,90 @@ class BaseModel(object):
                                   considering memory requirements in the decision.
         :return:
         """
-        if use_val_generator.lower() == 'auto':
-            print('[VALIDATION_DATA] [use_val_generator = "auto"] Validation data will either be loaded into '
-                  'memory or a data generator will be used, depending on memory requirements.')
-
-            threshold_percentage_memory = 50
-
-            # If storing validation set in memory would occupy less than a threshold amount of free memory (set by
-            # the parameter threshold_percentage_memory) then we can store in memory, else create a generator.
-            num_val = len(self.val_idx)  # number of validation samples
-            bytes_per_element = 8  # each element in a float array needs 8 bytes of memory
-            array_len = len(self.wav)  # length of one validation sample
-            target_len = len(self.targetname)
-            total_bytes_val = num_val * bytes_per_element * (
-                        array_len + target_len)  # total bytes required for storing validation data
-            total_gb_val = total_bytes_val / 1E9  # total GB required for storing validation data
-
-            #total_gb_model = self.get_model_memory_usage()
-
-            mem_free_kb = int(os.popen("free | awk 'FNR == 2 {print $4}'").read())
-            mem_free_gb = mem_free_kb / 1E6
-
-            print('[VALIDATION_DATA] Validation data needs {:.1f} GB to be stored in memory.'.format(total_gb_val))
-           # print('[VALIDATION_DATA] Model needs {:.1f} GB to be stored in memory.'.format(total_gb_model))
-            print('[VALIDATION_DATA] Free memory available (GB): {:.1f}'.format(mem_free_gb))
-
-            if ((total_gb_val / mem_free_gb) * 100) < threshold_percentage_memory:
-                print('[VALIDATION_DATA] Memory requirements less than {}% of free memory: '
-                      'loading validation data into memory'.format(threshold_percentage_memory))
-
-                validation_data = self.load_validation_dataset(use_val_generator='false')
-
+        if type(use_val_generator) == bool:
+            if use_val_generator:
+                use_val_generator = 'true'
             else:
-                print('[VALIDATION_DATA] Memory requirements greater than {}% of free memory: '
-                      'using a validation data generator'.format(threshold_percentage_memory))
+                use_val_generator = 'false'
+
+        if self.val_data_filename == '': self.val_data_filename = self.data_filename
+
+        print('[VALIDATION_DATA] Validation data will be loaded from: {}'.format(self.val_data_filename))
+
+        if self.val_data_filename != self.data_filename:
+            data = load_data_from_h5(self.val_data_filename,
+                                     spec_name=self.spec_name,
+                                     target_name=self.targetname,
+                                     mu=self.mu, sigma=self.sigma)
+
+            X_val, y_val = data.X, data.normed_y
+
+            print('[VALIDATION_DATA] Targets: {}'.format(self.targetname))
+            print('[VALIDATION_DATA] First 5 y: {}'.format(y_val[:5]))
+
+            X_val = np.asarray(X_val)
+
+            print('[VALIDATION_DATA] Reshaping...')
+            X_val = X_val.reshape(X_val.shape[0], X_val.shape[1], 1)
+
+            self.val_idx = np.arange(0, np.shape(X_val)[0])
+
+            validation_data = (X_val, y_val)
+
+        else:
+
+            if use_val_generator.lower() == 'auto':
+                print('[VALIDATION_DATA] [use_val_generator = "auto"] Validation data will either be loaded into '
+                      'memory or a data generator will be used, depending on memory requirements.')
+
+                threshold_percentage_memory = 80
+
+                # If storing validation set in memory would occupy less than a threshold amount of free memory (set by
+                # the parameter threshold_percentage_memory) then we can store in memory, else create a generator.
+                num_val = len(self.val_idx)  # number of validation samples
+                bytes_per_element = 8  # each element in a float array needs 8 bytes of memory
+                array_len = len(self.wav)  # length of one validation sample
+                target_len = len(self.targetname)
+                total_bytes_val = num_val * bytes_per_element * (
+                            array_len + target_len)  # total bytes required for storing validation data
+                total_gb_val = total_bytes_val / 1E9  # total GB required for storing validation data
+
+                #total_gb_model = self.get_model_memory_usage()
+
+                mem_free_kb = int(os.popen("free | awk 'FNR == 2 {print $4}'").read())
+                mem_free_gb = mem_free_kb / 1E6
+
+                print('[VALIDATION_DATA] Validation data needs {:.1f} GB to be stored in memory.'.format(total_gb_val))
+               # print('[VALIDATION_DATA] Model needs {:.1f} GB to be stored in memory.'.format(total_gb_model))
+                print('[VALIDATION_DATA] Free memory available (GB): {:.1f}'.format(mem_free_gb))
+
+                if ((total_gb_val / mem_free_gb) * 100) < threshold_percentage_memory:
+                    print('[VALIDATION_DATA] Memory requirements less than {}% of free memory: '
+                          'loading validation data into memory'.format(threshold_percentage_memory))
+
+                    validation_data = self.load_validation_dataset(use_val_generator='false')
+
+                else:
+                    print('[VALIDATION_DATA] Memory requirements greater than {}% of free memory: '
+                          'using a validation data generator'.format(threshold_percentage_memory))
+                    validation_data = DataGenerator(indices=self.val_idx,
+                                                    data_filename=self.data_filename,
+                                                    wav=self.wav,
+                                                    targetname=self.targetname,
+                                                    mu=self.mu,
+                                                    sigma=self.sigma,
+                                                    spec_name=self.spec_name,
+                                                    max_added_noise=self.added_noise,
+                                                    line_regions=self.line_regions,
+                                                    segments_step=self.segments_step,
+                                                    max_fraction_zeros=self.max_frac_zeros,
+                                                    batch_size=self.batch_size,
+                                                    telluric_mask_file=self.telluric_mask_file,
+                                                    max_flux_value=self.max_flux_value,
+                                                    min_flux_value=self.min_flux_value,
+                                                    global_err_mask=self.global_err_mask,
+                                                    mask_list=self.masks)
+            elif use_val_generator.lower() == 'true':
                 validation_data = DataGenerator(indices=self.val_idx,
                                                 data_filename=self.data_filename,
                                                 wav=self.wav,
@@ -345,67 +410,62 @@ class BaseModel(object):
                                                 segments_step=self.segments_step,
                                                 max_fraction_zeros=self.max_frac_zeros,
                                                 batch_size=self.batch_size,
-                                                telluric_mask_file=self.telluric_mask_file)
-        elif use_val_generator.lower() == 'true':
-            validation_data = DataGenerator(indices=self.val_idx,
-                                            data_filename=self.data_filename,
-                                            wav=self.wav,
-                                            targetname=self.targetname,
-                                            mu=self.mu,
-                                            sigma=self.sigma,
-                                            spec_name=self.spec_name,
-                                            max_added_noise=self.added_noise,
-                                            line_regions=self.line_regions,
-                                            segments_step=self.segments_step,
-                                            max_fraction_zeros=self.max_frac_zeros,
-                                            batch_size=self.batch_size,
-                                            telluric_mask_file=self.telluric_mask_file)
+                                                telluric_mask_file=self.telluric_mask_file,
+                                                max_flux_value=self.max_flux_value,
+                                                min_flux_value=self.min_flux_value,
+                                                global_err_mask=self.global_err_mask,
+                                                mask_list=self.masks)
 
-        elif use_val_generator.lower() == 'false':
+            elif use_val_generator.lower() == 'false':
 
-            print('[VALIDATION_DATA] Loading data...')
-            if self.shuffle_indices:
-                print('[VALIDATION_DATA] Warning: indices were shuffled, therefore indexing the h5 file might take a '
-                      'long time... recommend setting shuffle_indices=False')
+                print('[VALIDATION_DATA] Loading data...')
                 X_val, y_val = load_batch_from_h5(self.data_filename,
                                                   indices=self.val_idx,
                                                   spec_name=self.spec_name,
                                                   targetname=self.targetname,
                                                   mu=self.mu, sigma=self.sigma)
-            else:
-                X_val, y_val = load_contiguous_slice_from_h5(self.data_filename,
-                                                             start_indx=self.val_idx[0],
-                                                             end_indx=self.val_idx[-1],
-                                                             spec_name=self.spec_name,
-                                                             targetname=self.targetname,
-                                                             mu=self.mu, sigma=self.sigma)
 
-            X_val = np.asarray(X_val)
+                X_val = np.asarray(X_val)
 
-            # Zero out flux values below and above certain thresholds
-            if self.max_flux_value is not None:
-                X_val[X_val > self.max_flux_value] = 0
-            if self.min_flux_value is not None:
-                X_val[X_val < self.min_flux_value] = 0
+                # Zero out the NaN and inf values if they exist
+                X_val[np.isnan(X_val)] = 0
+                X_val[np.isinf(X_val)] = 0
 
-            # Inject zeros into the spectrum
-            if self.max_frac_zeros is not None:
-                num_zeros = int(len(self.wav) * self.max_frac_zeros)
-                print('[VALIDATION_DATA] Injecting a maximum of {} zeros into each spectrum...'.format(num_zeros))
-                X_val = add_zeros(X_val, num_zeros)
+                # Zero out flux values below and above certain thresholds
+                if self.max_flux_value is not None:
+                    X_val[X_val > self.max_flux_value] = 0
+                if self.min_flux_value is not None:
+                    X_val[X_val < self.min_flux_value] = 0
 
-            print('[VALIDATION_DATA] Applying telluric mask...')
-            if self.telluric_mask_file is not None:
-                if self.wav is not None:
-                    telluric_mask_ = telluric_mask(self.telluric_mask_file, self.wav)
-                    X_val *= telluric_mask_
-                else:
-                    raise ValueError('Must supply wavelength array if masking tellurics!')
+                # Add zeroes according to a global error array
+                if self.global_err_mask is not None:
+                    X_val = apply_global_error_mask(X_val, self.global_err_mask)
 
-            print('[VALIDATION_DATA] Reshaping...')
-            X_val = X_val.reshape(X_val.shape[0], X_val.shape[1], 1)
+                # Inject zeros into the spectrum
+                if self.max_frac_zeros is not None:
+                    num_zeros = int(len(self.wav) * self.max_frac_zeros)
+                    print('[VALIDATION_DATA] Injecting a maximum of {} zeros into each spectrum...'.format(num_zeros))
+                    X_val = add_zeros(X_val, num_zeros)
 
-            validation_data = (X_val, y_val)
+                if self.telluric_mask_file is not None or self.telluric_mask_file != 'None':
+                    #TODO get rid of awful try except statement here
+                    print('[VALIDATION_DATA] Applying telluric mask...')
+                    print(self.telluric_mask_file)
+                    try:
+                        if self.wav is not None:
+                            telluric_mask_ = telluric_mask(self.telluric_mask_file, self.wav)
+                            X_val *= telluric_mask_
+                        else:
+                            raise ValueError('Must supply wavelength array if masking tellurics!')
+                    except:
+                        pass
+
+                #X_val = X_val[:, :1980]
+
+                print('[VALIDATION_DATA] Reshaping...')
+                X_val = X_val.reshape(X_val.shape[0], X_val.shape[1], 1)
+
+                validation_data = (X_val, y_val)
 
         return validation_data
 
@@ -416,6 +476,7 @@ class BaseModel(object):
         self.fullfilepath = os.path.join(self.currentdir, self.folder_name)
         training_log_path = os.path.join(self.fullfilepath, 'training.log')
         if os.path.exists(training_log_path):
+            print('[LOAD MODEL] Latest learning rate being collected from training log: {}'.format(training_log_path))
             with open(training_log_path, mode='r') as csv_file:
                 csv_reader = csv.DictReader(csv_file)
                 learning_rates = []
@@ -427,13 +488,17 @@ class BaseModel(object):
                     min_lr = np.nanmin(learning_rates)
                     # If validation loss hasn't decreased in N = reduce_lr_patience epochs, then
                     # halve the learning rate. Otherwise, use the lowest learning rate.
-                    if not np.any(val_losses[-self.reduce_lr_patience:] <= min_lr):
-                        lr = min_lr / 2.
-                    else:
-                        lr = min_lr
+                    #if not np.any([loss <= min_lr for loss in val_losses[-self.reduce_lr_patience:]]):
+                    #    print('[LOAD MODEL] Minimum validation loss has not decreased in the last {0}'
+                    #          'epochs, so the learning rate will be '
+                    #          'decreased from {1} to {2}'.format(self.reduce_lr_patience,
+                    #                                             min_lr, min_lr / 2.))
+                    #    lr = min_lr / 2.
+                    #else:
+                    print('[LOAD MODEL] Last learning rate of lr={} will be used'.format(self.lr))
+                    lr = min_lr
                     self.lr = lr
-                print('[LOAD MODEL] Last learning rate of lr={} collected from: {}'.format(self.lr,
-                                                                                           training_log_path))
+
 
         # Define optimizer
         self.optimizer = Adam(lr=self.lr, beta_1=self.beta_1, beta_2=self.beta_2,
@@ -574,11 +639,36 @@ class BaseModel(object):
         # Set filepath to this directory
         self.fullfilepath = os.path.join(self.currentdir, self.folder_name)
 
-        # Split up training set
-        self.train_idx, self.val_idx = train_test_split(np.arange(self.num_train), test_size=self.val_size,
-                                                        shuffle=self.shuffle_indices)
-        print('[DATA] Number of Training Data: {:d}, Number of Validation Data: {:d}'.format(len(self.train_idx),
-                                                                                             len(self.val_idx)))
+        reference_set_indices = np.arange(self.num_train)
+        remove_bad_spectra = False
+        if remove_bad_spectra:
+            # Remove any indices which correspond to bad spectra
+            #TODO investigate why there are sometimes bad synthetic spectra (very rare but happens)
+            bad_indices = []
+            print('[DATA CLEANING] Finding any bad spectra and deleting them from the training/validation sets')
+            for i in range(0, self.num_train, 1000):
+                print(i)
+                with h5py.File(self.data_filename, 'r') as f:
+                    spec = f[self.spec_name][i:i + 1000]
+                    spec_len = len(spec[0])
+                    for j, x in enumerate(spec):
+                        if np.sum(np.isnan(x)) > 0.5*spec_len or np.sum(np.asarray(x)==0) > 0.5*spec_len or \
+                                np.sum(np.isinf(x)) > 0.5*spec_len:
+                            bad_indices.append(i + j)
+
+            print('[DATA CLEANING] Found and deleting the following bad indices: {}'.format(bad_indices))
+            reference_set_indices = np.delete(reference_set_indices, bad_indices)
+
+        if self.data_filename == self.val_data_filename or self.val_data_filename == '':
+            # Split up training set
+            self.train_idx, self.val_idx = train_test_split(reference_set_indices, test_size=self.val_size,
+                                                            shuffle=self.shuffle_indices)
+            print('[DATA] Number of Validation Data: {:d}'.format(len(self.val_idx)))
+
+        else:
+            self.train_idx = np.arange(self.num_train)
+
+        print('[DATA] Number of Training Data: {:d}'.format(len(self.train_idx)))
 
         # Acquire input shape
         if self.input_shape is None:
@@ -588,21 +678,41 @@ class BaseModel(object):
         self.mu, self.sigma = self.get_mu_and_sigma()  # get label normalization values
 
         # Create training set data generator
-        self.training_generator = DataGenerator(indices=self.train_idx,
-                                                data_filename=self.data_filename,
-                                                wav=self.wav,
-                                                targetname=self.targetname,
-                                                mu=self.mu,
-                                                sigma=self.sigma,
-                                                spec_name=self.spec_name,
-                                                max_added_noise=self.added_noise,
-                                                line_regions=self.line_regions,
-                                                segments_step=self.segments_step,
-                                                max_fraction_zeros=self.max_frac_zeros,
-                                                batch_size=self.batch_size,
-                                                min_flux_value=self.min_flux_value,
-                                                max_flux_value=self.max_flux_value,
-                                                telluric_mask_file=self.telluric_mask_file)
+        if self.use_hard_mining:
+            self.training_generator = DataGenerator_HardMining(model=self.keras_model,
+                                                    indices=self.train_idx,
+                                                    data_filename=self.data_filename,
+                                                    wav=self.wav,
+                                                    targetname=self.targetname,
+                                                    mu=self.mu,
+                                                    sigma=self.sigma,
+                                                    spec_name=self.spec_name,
+                                                    max_added_noise=self.added_noise,
+                                                    line_regions=self.line_regions,
+                                                    segments_step=self.segments_step,
+                                                    max_fraction_zeros=self.max_frac_zeros,
+                                                    batch_size=self.batch_size,
+                                                    min_flux_value=self.min_flux_value,
+                                                    max_flux_value=self.max_flux_value,
+                                                    telluric_mask_file=self.telluric_mask_file)
+        else:
+            self.training_generator = DataGenerator(indices=self.train_idx,
+                                                    data_filename=self.data_filename,
+                                                    wav=self.wav,
+                                                    targetname=self.targetname,
+                                                    mu=self.mu,
+                                                    sigma=self.sigma,
+                                                    spec_name=self.spec_name,
+                                                    max_added_noise=self.added_noise,
+                                                    line_regions=self.line_regions,
+                                                    segments_step=self.segments_step,
+                                                    max_fraction_zeros=self.max_frac_zeros,
+                                                    batch_size=self.batch_size,
+                                                    min_flux_value=self.min_flux_value,
+                                                    max_flux_value=self.max_flux_value,
+                                                    telluric_mask_file=self.telluric_mask_file,
+                                                    global_err_mask=self.global_err_mask,
+                                                    mask_list=self.masks)
 
         self.validation_data = self.load_validation_dataset(self.use_val_generator)
 
@@ -668,7 +778,7 @@ class BaseModel(object):
 
         cpus = multiprocessing.cpu_count()
         workers = cpus - 2 if cpus > 2 else 1
-        max_q = 10 if workers < 10 else workers
+        self.max_q = 10 if workers < 10 else workers
 
         if self.num_gpu > 1:
             print('[INFO] multi-GPU model selected for training...')
@@ -676,16 +786,36 @@ class BaseModel(object):
         else:
             model_ = self.keras_model
 
-        self.history = model_.fit_generator(generator=self.training_generator,
-                                            steps_per_epoch=steps_per_epoch,
-                                            validation_data=self.validation_data,
-                                            validation_steps=validation_steps,
-                                            epochs=self.max_epochs,
-                                            verbose=self.verbose,
-                                            workers=workers,
-                                            callbacks=self.callbacks,
-                                            max_q_size=max_q,
-                                            use_multiprocessing=self.use_multiprocessing)
+        # For some reason, hard mining does not work with multi-threaded keras stuff, so need to set workers to 0.
+        # It also, for a strange and unknown reason, needs the model to predict() before training begins?
+        # Some weird magic.
+        if self.use_hard_mining:
+            workers = 0
+            x, y = self.training_generator.custom_generate_batch()
+            model_.predict(x)
+
+        if isinstance(model_, tfk.models.Model):
+            self.history = model_.fit_generator(generator=self.training_generator,
+                                                steps_per_epoch=steps_per_epoch,
+                                                validation_data=self.validation_data,
+                                                validation_steps=validation_steps,
+                                                epochs=self.max_epochs,
+                                                verbose=self.verbose,
+                                                workers=workers,
+                                                callbacks=self.callbacks,
+                                                max_queue_size=self.max_q,
+                                                use_multiprocessing=self.use_multiprocessing)
+        else:
+            self.history = model_.fit_generator(generator=self.training_generator,
+                                                steps_per_epoch=steps_per_epoch,
+                                                validation_data=self.validation_data,
+                                                validation_steps=validation_steps,
+                                                epochs=self.max_epochs,
+                                                verbose=self.verbose,
+                                                workers=workers,
+                                                callbacks=self.callbacks,
+                                                max_q_size=self.max_q,
+                                                use_multiprocessing=self.use_multiprocessing)
         end_time = time.time()
         total_time = end_time - start_time
 
@@ -712,20 +842,36 @@ class BaseDeepEnsemble(BaseModel):
         self.fullfilepath = os.path.join(self.currentdir, self.folder_name)
         training_log_path = os.path.join(self.fullfilepath, 'training.log')
         if os.path.exists(training_log_path):
+            print('[LOAD MODEL] Latest learning rate being collected from training log: {}'.format(training_log_path))
             with open(training_log_path, mode='r') as csv_file:
                 csv_reader = csv.DictReader(csv_file)
                 learning_rates = []
+                val_losses = []
                 for row in csv_reader:
                     learning_rates.append(float(row['lr']))
+                    val_losses.append(float(row['val_loss']))
                 if not np.isnan(learning_rates).all():  # Don't try to find min if all NaNs
-                    self.lr = np.nanmin(learning_rates)
-                print('Last learning rate of lr={} collected from: {}'.format(self.lr, training_log_path))
-                self.optimizer = Adam(lr=self.lr, beta_1=self.beta_1, beta_2=self.beta_2,
-                                      epsilon=self.optimizer_epsilon,
-                                      clipnorm=1.)
+                    min_lr = np.nanmin(learning_rates)
+                    # If validation loss hasn't decreased in N = reduce_lr_patience epochs, then
+                    # halve the learning rate. Otherwise, use the lowest learning rate.
+                    #if not np.any([loss <= min_lr for loss in val_losses[-self.reduce_lr_patience:]]) and \
+                    #        learning_rates[-self.reduce_lr_patience:].count(min_lr) >= self.reduce_lr_patience:
+                    #    print('[LOAD MODEL] Minimum validation loss has not decreased in the last {0}'
+                    #          'epochs, so the learning rate will be '
+                    #          'decreased from {1} to {2}'.format(self.reduce_lr_patience,
+                    #                                             min_lr, min_lr / 2.))
+                    #    lr = min_lr / 2.
+                    #else:
+                    print('[LOAD MODEL] Last learning rate of lr={} will be used'.format(self.lr))
+                    lr = min_lr
+                    self.lr = lr
         else:
             # TODO
             print('TODO')
+
+        self.optimizer = Adam(lr=self.lr, beta_1=self.beta_1, beta_2=self.beta_2,
+                              epsilon=self.optimizer_epsilon,
+                              clipnorm=1.)
 
         if self.num_gpu > 1:
             with tf.device('/cpu:0'):
@@ -766,6 +912,7 @@ class BaseDeepEnsemble(BaseModel):
             print('[INFO] Compiling Keras model')
             self.keras_model.compile(loss=self.loss_func(self.deepensemble_sigma), optimizer=self.optimizer,
                                      metrics=self.metrics, loss_weights=None)
+        self.keras_model.outputs[0]._uses_learning_phase = True
 
         return None
 
@@ -787,36 +934,36 @@ class BaseDeepEnsembleTwoModelOutputs(BaseModel):
 
         # Create training set data generator
         self.training_generator = DataGeneratorDeepEnsemble(indices=self.train_idx,
-                                               data_filename=self.data_filename,
-                                               wav=self.wav,
-                                               targetname=self.targetname,
-                                               mu=self.mu,
-                                               sigma=self.sigma,
-                                               spec_name=self.spec_name,
-                                               max_added_noise=self.added_noise,
-                                               line_regions=self.line_regions,
-                                               segments_step=self.segments_step,
-                                               max_fraction_zeros=self.max_frac_zeros,
-                                               batch_size=self.batch_size,
-                                               min_flux_value=self.min_flux_value,
-                                               max_flux_value=self.max_flux_value,
-                                               telluric_mask_file=self.telluric_mask_file)
+                                                            data_filename=self.data_filename,
+                                                            wav=self.wav,
+                                                            targetname=self.targetname,
+                                                            mu=self.mu,
+                                                            sigma=self.sigma,
+                                                            spec_name=self.spec_name,
+                                                            max_added_noise=self.added_noise,
+                                                            line_regions=self.line_regions,
+                                                            segments_step=self.segments_step,
+                                                            max_fraction_zeros=self.max_frac_zeros,
+                                                            batch_size=self.batch_size,
+                                                            min_flux_value=self.min_flux_value,
+                                                            max_flux_value=self.max_flux_value,
+                                                            telluric_mask_file=self.telluric_mask_file)
 
         self.validation_data = DataGeneratorDeepEnsemble(indices=self.val_idx,
-                                                data_filename=self.data_filename,
-                                                wav=self.wav,
-                                                targetname=self.targetname,
-                                                mu=self.mu,
-                                                sigma=self.sigma,
-                                                spec_name=self.spec_name,
-                                                max_added_noise=self.added_noise,
-                                                line_regions=self.line_regions,
-                                                segments_step=self.segments_step,
-                                                max_fraction_zeros=self.max_frac_zeros,
-                                                batch_size=self.batch_size,
-                                                min_flux_value=self.min_flux_value,
-                                                max_flux_value=self.max_flux_value,
-                                                telluric_mask_file=self.telluric_mask_file)
+                                                         data_filename=self.data_filename,
+                                                         wav=self.wav,
+                                                         targetname=self.targetname,
+                                                         mu=self.mu,
+                                                         sigma=self.sigma,
+                                                         spec_name=self.spec_name,
+                                                         max_added_noise=self.added_noise,
+                                                         line_regions=self.line_regions,
+                                                         segments_step=self.segments_step,
+                                                         max_fraction_zeros=self.max_frac_zeros,
+                                                         batch_size=self.batch_size,
+                                                         min_flux_value=self.min_flux_value,
+                                                         max_flux_value=self.max_flux_value,
+                                                         telluric_mask_file=self.telluric_mask_file)
 
         return None
 

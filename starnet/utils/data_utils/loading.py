@@ -6,6 +6,21 @@ import glob
 import zipfile
 from astropy.io import fits as pyfits
 
+abundances_info = {'3': 'Li', '11': 'Na',
+                    '12': 'Mg', '17': 'Cl',
+                    '8': 'O', '13': 'Al',
+                    '14': 'Si', '15': 'P',
+                    '16': 'S', '26': 'Fe',
+                    '20': 'Ca', '22': 'Ti',
+                    '23': 'V', '24': 'Cr',
+                    '25': 'Mn', '27': 'Co',
+                    '28': 'Ni', '29': 'Cu',
+                    '32': 'Ge', '37': 'Rb',
+                    '60': 'Nd', '7': 'N',
+                    '63': 'Eu', '6': 'C',
+                    '38': 'Sr', '56': 'Ba',
+                    '40': 'Zn', '10': 'Ne',
+                    '18': 'Ar'}
 
 def collect_file_list(grid_name, spec_dir):
 
@@ -21,7 +36,7 @@ def collect_file_list(grid_name, spec_dir):
 
             # Iterate through files
             for file in files:
-                if '_N' in file:
+                if '_N' in file:# or '_L' in file:
                     filepath = os.path.join(root, file)
                     file_list.append(filepath)
         return file_list
@@ -34,8 +49,8 @@ def collect_file_list(grid_name, spec_dir):
 
 class load_data_from_h5(object):
 
-    def __init__(self, data_file, spec_name, target_name, wave_grid_key=None, noise_key=None, start_indx=None,
-                 end_indx=None, mu=None, sigma=None):
+    def __init__(self, data_file, spec_name, target_name=None, wave_grid_key=None, noise_key=None, start_indx=None,
+                 end_indx=None, mu=None, sigma=None, verbose=False):
         """
         Creates a data object containing spectra, normalized and non-normalized spectra properties
         (e.g. teff, logg, noise, etc), and the wavelength grid
@@ -59,6 +74,7 @@ class load_data_from_h5(object):
         self.target_name = target_name
         self.start_indx = start_indx
         self.end_indx = end_indx
+        self.verbose = verbose
 
         self.X = None
         self.y = None
@@ -90,7 +106,10 @@ class load_data_from_h5(object):
             if self.mu is not None and self.sigma is not None:
                 self.normed_y = self.normalize(self.y, self.mu, self.sigma)
             else:
-                print('only non-normalized labels will be returned!')
+                if self.verbose:
+                    print('only non-normalized labels will be returned!')
+                else:
+                    pass
 
     @staticmethod
     def normalize(data, mu, sigma):
@@ -136,7 +155,9 @@ def load_contiguous_slice_from_h5(data_path, start_indx, end_indx, spec_name='',
     return X, y
 
     
-def load_batch_from_h5(data_filename, indices, spec_name='', targetname=['teff', 'logg', 'M_H'], mu=None, sigma=None):
+def load_batch_from_h5(data_filename, indices, spec_name='',
+                       targetname=['teff', 'logg', 'M_H'],
+                       mu=None, sigma=None):
             
         with h5py.File(data_filename, 'r') as data_file:  # load data file
             indices = indices.tolist()
@@ -211,6 +232,7 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
 
     # Initialize values
     teff, logg, m_h, a_m, vt, vsini = np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+    abundances = {}
     flux = None
     wave_grid = None
 
@@ -295,12 +317,23 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
         teff, logg, m_h, vt, macro, vsini = params[0], params[1], params[2], params[3], params[4], params[5]
 
         # Parse out abundances
-        atomic_number_string, abundance_string = header_data[8].strip('#\n').split(':')
-        #atomic_numbers = [int(s) for s in atomic_number_string[1:].split()]
-        abundances = [float(s) for s in abundance_string[1:].split()]
+        if '_L' in os.path.basename(file_path):
+            atomic_number_string, abundance_string = header_data[6].strip('#\n').split(':')
+        else:
+            atomic_number_string, abundance_string = header_data[8].strip('#\n').split(':')
+        atomic_numbers = [int(s) for s in atomic_number_string[1:].split()]
+        abundance_vals = [float(s) for s in abundance_string[1:].split()]
 
-        # For this particular case, all abundances varied were alpha. Just grab first abundance
-        a_m = abundances[0]
+        if len(np.unique(abundance_vals)) == 1:
+            # For this particular case, all abundances varied were alpha. Just grab first abundance
+            a_m = abundance_vals[0]
+        else:
+            for i in range(len(atomic_numbers)):
+                an = atomic_numbers[i]
+                abundance_val = abundance_vals[i]
+                el_name = abundances_info[str(an)]
+
+                abundances[el_name] = abundance_val
 
     else:
         raise ValueError('{} not a valid grid name. Need to supply an appropriate spectral grid name '
@@ -314,7 +347,7 @@ def get_synth_spec_data(file_path, grid_name='phoenix', ferre_indx=np.nan, get_f
               'vt': vt,
               'vrot': vsini}
 
-    return flux, wave_grid, params
+    return flux, wave_grid, params, abundances
 
 def get_rave_data(path):
     archive = zipfile.ZipFile(path, 'r')

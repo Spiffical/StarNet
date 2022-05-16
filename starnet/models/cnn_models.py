@@ -1,11 +1,14 @@
 import os, sys
-sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#if not os.getenv('SLURM_TMPDIR'):
+#    sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
+#else:
+#    sys.path.insert(0, os.path.join(os.getenv('SLURM_TMPDIR'), 'StarNet'))
 import csv
 import numpy as np
 
 from starnet.models.base import BaseModel, BaseDeepEnsemble, BaseDeepEnsembleTwoModelOutputs
 from starnet.utils.nn_utils.custom_layers import GaussianLayer
-from starnet.utils.nn_utils.resnet_architecture import identity_block, conv_block
+from starnet.utils.nn_utils.resnet_architecture import identity_block, conv_block, stochastic_depth_residual_block
 from starnet.models.base import ModelMGPU
 
 from keras.layers import Dense, Flatten, Input, Dropout, Activation
@@ -31,7 +34,7 @@ class StarNet2017(BaseModel):
         self.initializer = 'he_normal'
         self.activation = 'relu'
         self.num_filters = [4, 16]
-        self.filter_len = 8
+        self.filter_len = 4
         self.pool_length = 4
         self.num_hidden = [256, 128]
         self.l2 = 0
@@ -128,7 +131,7 @@ class StarResNet(BaseModel):
         x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_uniform(seed=0))(x)
         x = BatchNormalization(name='bn_conv1')(x)
         x = Activation('relu')(x)
-        #x = MaxPooling1D(3, strides=2)(x)
+        x = MaxPooling1D(3, strides=2)(x)
 
         # Stage 2
         x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
@@ -197,7 +200,7 @@ class StarResNetSmall(BaseModel):
         x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_uniform(seed=0))(x)
         x = BatchNormalization(name='bn_conv1')(x)
         x = Activation('relu')(x)
-        # x = MaxPooling1D(3, strides=2)(x)
+        x = MaxPooling1D(3, strides=2)(x)
 
         # Stage 2
         x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
@@ -242,10 +245,10 @@ class StarResNetDeepEnsemble(BaseDeepEnsemble):
         x = ZeroPadding1D(3)(x_input)
 
         # Stage 1
-        x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_normal(seed=0))(x)
+        x = Conv1D(4, 8, strides=1, name='conv1', kernel_initializer=glorot_normal(seed=0))(x)
         x = BatchNormalization(name='bn_conv1')(x)
         x = Activation('relu')(x)
-        # x = MaxPooling1D(3, strides=2)(x)
+        x = MaxPooling1D(3, strides=1)(x)
 
         # Stage 2
         x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
@@ -300,7 +303,7 @@ class StarResNetDeepEnsembleTwoOutputs(BaseDeepEnsembleTwoModelOutputs):
         x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_normal(seed=0))(x)
         x = BatchNormalization(name='bn_conv1')(x)
         x = Activation('relu')(x)
-        # x = MaxPooling1D(3, strides=2)(x)
+        x = MaxPooling1D(3, strides=2)(x)
 
         # Stage 2
         x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
@@ -366,7 +369,7 @@ class StarResNetSmallDeepEnsemble(BaseDeepEnsemble):
         x = Conv1D(4, 7, strides=1, name='conv1', kernel_initializer=glorot_uniform(seed=0))(x)
         x = BatchNormalization(name='bn_conv1')(x)
         x = Activation('relu')(x)
-        # x = MaxPooling1D(3, strides=2)(x)
+        x = MaxPooling1D(3, strides=2)(x)
 
         # Stage 2
         x = conv_block(x, kernel_size=3, filters=[4, 4, 16], stage=2, block='a', s=1)
@@ -395,6 +398,60 @@ class StarResNetSmallDeepEnsemble(BaseDeepEnsemble):
         model = Model(inputs=x_input, outputs=mu, name='ResNetDeepEnsemble')
 
         return model, sigma
+
+
+class StochasticResNet(BaseModel):
+
+    def __init__(self):
+        super(StochasticResNet, self).__init__()
+        self._model_type = 'Stochastic_ResNet'
+        self.last_layer_activation = 'linear'
+
+    def model(self):
+
+        blocks_per_group = 3
+
+        inputs = Input(shape=self.get_input_shape())
+
+        x = Conv1D(16, 3, kernel_initializer='he_normal', padding='same')(inputs)
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+
+        for i in range(0, blocks_per_group):
+            nb_filters = 16
+            x = stochastic_depth_residual_block(x, nb_filters=nb_filters,
+                                                block=i, nb_total_blocks=3 * blocks_per_group,
+                                                subsample_factor=1)
+
+        for i in range(0, blocks_per_group):
+            nb_filters = 32
+            if i == 0:
+                subsample_factor = 2
+            else:
+                subsample_factor = 1
+            x = stochastic_depth_residual_block(x, nb_filters=nb_filters,
+                                                block=blocks_per_group + i, nb_total_blocks=3 * blocks_per_group,
+                                                subsample_factor=subsample_factor)
+
+        for i in range(0, blocks_per_group):
+            nb_filters = 64
+            if i == 0:
+                subsample_factor = 2
+            else:
+                subsample_factor = 1
+            x = stochastic_depth_residual_block(x, nb_filters=nb_filters,
+                                                block=2 * blocks_per_group + i, nb_total_blocks=3 * blocks_per_group,
+                                                subsample_factor=subsample_factor)
+
+        x = AveragePooling1D(pool_size=8, strides=None, padding='valid')(x)
+        x = Flatten()(x)
+
+        x = Dense(len(self.targetname), activation=self.last_layer_activation, name='fc' + str(len(self.targetname)),
+                  kernel_initializer='he_normal')(x)
+
+        model = Model(input=inputs, output=x)
+
+        return model
 
 
 class StarResNet_old(BaseModel):
