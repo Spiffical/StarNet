@@ -10,7 +10,7 @@ if not os.getenv('SLURM_TMPDIR'):
     sys.path.insert(0, os.path.join(os.getenv('HOME'), 'StarNet'))
 else:
     sys.path.insert(0, os.path.join(os.getenv('SLURM_TMPDIR'), 'StarNet'))
-from data_generation.preprocess_spectra import preprocess_batch_of_spectra, preprocess_batch_of_aat_spectra, \
+from data_generation.utils.preprocess_spectra import preprocess_batch_of_spectra, preprocess_batch_of_aat_spectra, \
     preprocess_batch_of_weave_spectra
 from starnet.utils.data_utils.loading import collect_file_list
 
