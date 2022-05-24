@@ -80,8 +80,6 @@ max_logg = args.max_logg
 min_logg = args.min_logg
 max_feh = args.max_feh
 min_feh = args.min_feh
-max_feh = args.max_feh
-min_feh = args.min_feh
 max_afe = args.max_afe
 min_afe = args.min_afe
 sigma_gaussian = args.sigma_gaussian
@@ -100,13 +98,14 @@ def write_job_file(output_path, script_path, spec_dir, save_dir, virtual_env, wa
         writer.write('source {}\n'.format(os.path.join(HOME_DIR, virtual_env, 'bin/activate')))
         writer.write('python -c "from eniric import config; config.copy_file(\'.\')"\n')
         writer.write('cp -r {} {}\n'.format(os.path.join(HOME_DIR, 'StarNet'), '$SLURM_TMPDIR'))
+        writer.write('cp -r {} {}\n'.format(spec_dir, '$SLURM_TMPDIR'))
         writer.write('\n\n')
-        writer.write('python {}/StarNet/starnet/scripts/{} \\\n'.format('$SLURM_TMPDIR', os.path.basename(script_path)))
-        writer.write('--spec_dir %s \\\n' % spec_dir)
+        writer.write('python {}/StarNet/data_generation/{} \\\n'.format('$SLURM_TMPDIR', os.path.basename(script_path)))
+        writer.write('--spec_dir %s \\\n' % os.path.join('$SLURM_TMPDIR', os.path.basename(spec_dir)))
         writer.write('--save_dir %s \\\n' % save_dir)
         writer.write('--obs_wave_file %s \\\n' % wave_grid_obs_file)
         writer.write('--grid %s \\\n' % spectral_grid_name)
-        if telescope != '':
+        if telescope:
             writer.write('--telescope %s \\\n' % telescope)
         writer.write('--resolution %s \\\n' % instrument_res)
         writer.write('--synth_wave_file %s \\\n' % wave_grid_synth_file)

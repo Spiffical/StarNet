@@ -151,11 +151,8 @@ def val_epoch_generator(NN,valid_generator,device,val_steps,loss_fn):
         return avgLoss
 
 
-def train_NN(config, num_train, data_path, targets, spec_key, save_folder, max_epochs, noise_addition,
+def train_NN(lr, batch_size, num_train, data_path, targets, spec_key, save_folder, max_epochs, noise_addition,
              remove_gaps, remove_arm, weight_decay, val_data_path, min_wvl, max_wvl):
-    
-    lr, batch_size = config
-
 
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
@@ -192,7 +189,6 @@ def train_NN(config, num_train, data_path, targets, spec_key, save_folder, max_e
     device = torch.device("cuda:0" if use_cuda else "cpu")
 
     # Initializing the startorch model
-    #NN = DNN(sizes, len(targets), 43480).to(device)
     NN = StarNet(1, len(targets), (1, len_spec))
 
     # Load in previous best model weights if they were saved
@@ -316,7 +312,7 @@ if __name__ == "__main__":
 
     torch.multiprocessing.set_start_method('spawn')
 
-    train_NN([sizes,lr,batch_size],num_train,
+    train_NN(lr, batch_size, num_train,
              data_path,
              targets, spec_key,
              save_folder,
