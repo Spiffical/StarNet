@@ -172,15 +172,23 @@ def augment_spectrum(flux, wav, new_wav, rot=65, noise=0.02, vrad=200., to_res=2
     :return: modified flux array
     """
 
-    # Degrade resolution and apply rotational broadening
-    #epsilon = random.uniform(0, 1.)
-    #_, _, flux = convolution(wav=wav,
-    #                         flux=flux,
-    #                         vsini=rot,
-    #                         R=to_res,
-    #                         epsilon=epsilon,
-    #                         normalize=True,
-    #                         num_procs=10)
+    # Degrade resolution, and apply rotational broadening if non-zero rotation given
+    if rot == 0:
+        flux = resolution_convolution(wavelength=wav,
+                                      extended_wav=wav,
+                                      extended_flux=flux,
+                                      R=to_res,
+                                      normalize=True,
+                                      num_procs=1)
+    else:
+        epsilon = random.uniform(0, 1.)
+        _, _, flux = convolution(wav=wav,
+                                flux=flux,
+                                vsini=rot,
+                                R=to_res,
+                                epsilon=epsilon,
+                                normalize=True,
+                                num_procs=1)
 
     # Add radial velocity
     if vrad != 0:
@@ -232,25 +240,25 @@ def augment_spectra_parallel(spectra, wav, new_wav, vrot_list, noise_list, vrad_
     print('[INFO] Pool size: {}'.format(pool_size))
 
     # Degrade resolution and apply rotational broadening
-    for i in range(len(spectra)):
-        if vrot_list[i] == 0:
-            flux = resolution_convolution(wavelength=wav[i],
-                                          extended_wav=wav[i],
-                                          extended_flux=spectra[i],
-                                          R=instrument_res,
-                                          normalize=True,
-                                          num_procs=10)
-            spectra[i] = flux
-        else:
-            epsilon = random.uniform(0, 1.)
-            _, _, flux = convolution(wav=wav[i],
-                                     flux=spectra[i],
-                                     vsini=vrot_list[i],
-                                     R=instrument_res,
-                                     epsilon=epsilon,
-                                     normalize=True,
-                                     num_procs=10)
-            spectra[i] = flux
+    # for i in range(len(spectra)):
+    #     if vrot_list[i] == 0:
+    #         flux = resolution_convolution(wavelength=wav[i],
+    #                                       extended_wav=wav[i],
+    #                                       extended_flux=spectra[i],
+    #                                       R=instrument_res,
+    #                                       normalize=True,
+    #                                       num_procs=10)
+    #         spectra[i] = flux
+    #     else:
+    #         epsilon = random.uniform(0, 1.)
+    #         _, _, flux = convolution(wav=wav[i],
+    #                                  flux=spectra[i],
+    #                                  vsini=vrot_list[i],
+    #                                  R=instrument_res,
+    #                                  epsilon=epsilon,
+    #                                  normalize=True,
+    #                                  num_procs=10)
+    #         spectra[i] = flux
 
     pool_arg_list = [(spectra[i], wav[i], new_wav, vrot_list[i], noise_list[i], vrad_list[i], instrument_res,
                       trailing_zeros_l, trailing_zeros_r)
@@ -700,7 +708,7 @@ def preprocess_batch_of_spectra(file_list, wave_grid_obs, instrument_res, batch_
 
     if batch_size > 0:
         vrad_list = np.random.uniform(low=-max_vrad_to_apply, high=max_vrad_to_apply, size=(batch_size,))
-        vrot_list = np.random.uniform(low=0, high=max_vrot_to_apply, size=(batch_size,))
+        vrot_list = np.random.randint(low=0, high=max_vrot_to_apply, size=(batch_size,))
         noise_list = np.random.uniform(low=0, high=max_noise, size=(batch_size,))
 
         t1 = time.time()
@@ -713,33 +721,35 @@ def preprocess_batch_of_spectra(file_list, wave_grid_obs, instrument_res, batch_
         print(spectra)
         # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
         t1 = time.time()
-        spectra_asymnorm = continuum_normalize_parallel(spectra, wave_grid_obs,
-                                               line_regions=LINE_REGIONS,
-                                               segments_step=SEGMENTS_STEP,
-                                               fit='asym_sigmaclip',
-                                               sigma_upper=2.0, sigma_lower=0.5)
-        spectra_asymnorm_noiseless = continuum_normalize_parallel(spectra_noiseless, wave_grid_obs,
-                                                        line_regions=LINE_REGIONS,
-                                                        segments_step=SEGMENTS_STEP,
-                                                        fit='asym_sigmaclip',
-                                                        sigma_upper=2.0, sigma_lower=0.5)
+        # spectra_asymnorm = continuum_normalize_parallel(spectra, wave_grid_obs,
+        #                                        line_regions=LINE_REGIONS,
+        #                                        segments_step=SEGMENTS_STEP,
+        #                                        fit='asym_sigmaclip',
+        #                                        sigma_upper=2.0, sigma_lower=0.5)
+        # spectra_asymnorm_noiseless = continuum_normalize_parallel(spectra_noiseless, wave_grid_obs,
+        #                                                 line_regions=LINE_REGIONS,
+        #                                                 segments_step=SEGMENTS_STEP,
+        #                                                 fit='asym_sigmaclip',
+        #                                                 sigma_upper=2.0, sigma_lower=0.5)
         #spectra_gaussiannorm = continuum_normalize_parallel(spectra, wave_grid_obs,
         #                                                     fit='gaussian_smooth')
         #spectra_gaussiannorm_noiseless = continuum_normalize_parallel(spectra_noiseless, wave_grid_obs,
         #                                                    fit='gaussian_smooth')
-        print('Total continuum time: %.2f s' % (time.time() - t1))
+        #print('Total continuum time: %.2f s' % (time.time() - t1))
 
         # Check again for nans
         nan_indices = []
-        for i, f in enumerate(spectra_asymnorm):
+        for i, f in enumerate(spectra):#spectra_asymnorm):
             if sum(np.isnan(f)) > 0.5 * len(f):
                 nan_indices.append(i)
 
         if len(nan_indices) > 0:
-            spectra_asymnorm = np.delete(spectra_asymnorm, nan_indices)
+            #spectra_asymnorm = np.delete(spectra_asymnorm, nan_indices)
             #spectra_gaussiannorm = np.delete(spectra_gaussiannorm, nan_indices)
-            spectra_asymnorm_noiseless = np.delete(spectra_asymnorm_noiseless, nan_indices)
+            #spectra_asymnorm_noiseless = np.delete(spectra_asymnorm_noiseless, nan_indices)
             #spectra_gaussiannorm_noiseless = np.delete(spectra_gaussiannorm_noiseless, nan_indices)
+            spectra = np.delete(spectra, nan_indices)
+            spectra_noiseless = np.delete(spectra_noiseless, nan_indices)
             teff_list = np.delete(teff_list, nan_indices)
             logg_list = np.delete(logg_list, nan_indices)
             m_h_list = np.delete(m_h_list, nan_indices)
@@ -755,9 +765,10 @@ def preprocess_batch_of_spectra(file_list, wave_grid_obs, instrument_res, batch_
         # Put all spectra into a dictionary
         spectra_dict = {}
         spectra_dict['spectra_noiseless'] = spectra_noiseless
-        spectra_dict['spectra_asymnorm'] = spectra_asymnorm
+        spectra_dict['spectra'] = spectra
+        #spectra_dict['spectra_asymnorm'] = spectra_asymnorm
         #spectra_dict['spectra_gaussiannorm'] = spectra_gaussiannorm
-        spectra_dict['spectra_asymnorm_noiseless'] = spectra_asymnorm_noiseless
+        #spectra_dict['spectra_asymnorm_noiseless'] = spectra_asymnorm_noiseless
         #spectra_dict['spectra_gaussiannorm_noiseless'] = spectra_gaussiannorm_noiseless
 
         # Put all params into a dictionary
@@ -824,125 +835,149 @@ def preprocess_batch_of_weave_spectra(file_list, wave_grid_obs, instrument_res, 
 
     if batch_size > 0:
         vrad_list = np.random.uniform(low=-max_vrad_to_apply, high=max_vrad_to_apply, size=(batch_size,))
-        vrot_list = np.random.uniform(low=0, high=max_vrot_to_apply, size=(batch_size,))
+        vrot_list = np.random.randint(low=0, high=max_vrot_to_apply, size=(batch_size,))
         noise_list = np.random.uniform(low=0, high=max_noise, size=(batch_size,))
 
-        t1 = time.time()
-        # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)
-        spectra, spectra_noiseless = augment_spectra_parallel(spectra, wavegrid_synth_list,
-                                                            wave_grid_obs, vrot_list, noise_list,
-                                                            vrad_list, instrument_res)
-        print('Total modify time: %.1f s' % (time.time() - t1))
-
-        print(spectra)
-        # Continuum normalize spectra with asymmetric sigma clipping continuum fitting method
-        t1 = time.time()
-
-        # Acquire blue, green, and red wave grids/indices, extended on each side by 5 Angstroms
+        # Acquire blue, green, and red wave grids/indices, extended on each side by 5 Angstroms (plus extra for synth
+        # wave grid since we're shifting with radial velocity and want them to contain the weave grid still)
         blue_wvl_min, blue_wvl_max = 4046, 4640
         green_wvl_min, green_wvl_max = 4740, 5440
         red_wvl_min, red_wvl_max = 5960, 6840
         extension = 5
-        weave_blue_indices = (wave_grid_obs >= (blue_wvl_min - extension)) & (wave_grid_obs <= (blue_wvl_max + extension))
-        weave_green_indices = (wave_grid_obs >= (green_wvl_min - extension)) & (wave_grid_obs <= (green_wvl_max + extension))
-        weave_red_indices = (wave_grid_obs >= (red_wvl_min - extension)) & (wave_grid_obs <= (red_wvl_max + extension))
-        weave_blue_grid = wave_grid_obs[weave_blue_indices]
-        weave_green_grid = wave_grid_obs[weave_green_indices]
-        weave_red_grid = wave_grid_obs[weave_red_indices]
 
-        spectrablue = spectra[:, weave_blue_indices]
-        spectragreen = spectra[:, weave_green_indices]
-        spectrared = spectra[:, weave_red_indices]
-        spectrablue_noiseless = spectra_noiseless[:, weave_blue_indices]
-        spectragreen_noiseless = spectra_noiseless[:, weave_green_indices]
-        spectrared_noiseless = spectra_noiseless[:, weave_red_indices]
+        synth_blue_wave_ind = [(wavegrid_synth_list[i] >= (blue_wvl_min - (extension+3))) &
+                                (wavegrid_synth_list[i] <= (blue_wvl_max + (extension)+3))
+                               for i in range(len(wavegrid_synth_list))]
+        synth_green_wave_ind = [(wavegrid_synth_list[i] >= (green_wvl_min - (extension+3))) &
+                                 (wavegrid_synth_list[i] <= (green_wvl_max + (extension+3)))
+                                for i in range(len(wavegrid_synth_list))]
+        synth_red_wave_ind = [(wavegrid_synth_list[i] >= (red_wvl_min - (extension+3))) &
+                               (wavegrid_synth_list[i] <= (red_wvl_max + (extension+3)))
+                              for i in range(len(wavegrid_synth_list))]
+        synth_grid_blue_extended = np.asarray([wavegrid_synth_list[i][synth_blue_wave_ind[i]]
+                                    for i in range(len(wavegrid_synth_list))])
+        synth_grid_green_extended = np.asarray([wavegrid_synth_list[i][synth_green_wave_ind[i]]
+                                                for i in range(len(wavegrid_synth_list))])
+        synth_grid_red_extended = np.asarray([wavegrid_synth_list[i][synth_red_wave_ind[i]]
+                                              for i in range(len(wavegrid_synth_list))])
+        # Then the WEAVE wavelength grid
+        weave_blue_extended_indices = (wave_grid_obs >= (blue_wvl_min - extension)) & (
+                wave_grid_obs <= (blue_wvl_max + extension))
+        weave_green_extended_indices = (wave_grid_obs >= (green_wvl_min - extension)) & (
+                wave_grid_obs <= (green_wvl_max + extension))
+        weave_red_extended_indices = (wave_grid_obs >= (red_wvl_min - extension)) & (
+                wave_grid_obs <= (red_wvl_max + extension))
+        weave_blue_grid_extended = wave_grid_obs[weave_blue_extended_indices]
+        weave_green_grid_extended = wave_grid_obs[weave_green_extended_indices]
+        weave_red_grid_extended = wave_grid_obs[weave_red_extended_indices]
 
-        for i in range(len(spectrablue)):
-            spectrablue[i] = remove_interccd_gaps(spectrablue[i], weave_blue_grid)
-            spectragreen[i] = remove_interccd_gaps(spectragreen[i], weave_green_grid)
-            spectrared[i] = remove_interccd_gaps(spectrared[i], weave_red_grid)
-            spectrablue_noiseless[i] = remove_interccd_gaps(spectrablue_noiseless[i], weave_blue_grid)
-            spectragreen_noiseless[i] = remove_interccd_gaps(spectragreen_noiseless[i], weave_green_grid)
-            spectrared_noiseless[i] = remove_interccd_gaps(spectrared_noiseless[i], weave_red_grid)
+        # Now we get the blue, green, and red arms of the synthetic spectra
+        spectrablue_extended = np.asarray([spectra[i][synth_blue_wave_ind[i]]
+                                               for i in range(len(spectra))])
+        spectragreen_extended = np.asarray([spectra[i][synth_green_wave_ind[i]]
+                                                for i in range(len(spectra))])
+        spectrared_extended = np.asarray([spectra[i][synth_red_wave_ind[i]]
+                                              for i in range(len(spectra))])
+
+        t1 = time.time()
+        # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)
+        spectrablue_aug, spectrablue_noiseless_aug = augment_spectra_parallel(spectrablue_extended,
+                                                                              synth_grid_blue_extended,
+                                                                              weave_blue_grid_extended,
+                                                                              vrot_list, noise_list, vrad_list,
+                                                                              instrument_res)
+        spectragreen_aug, spectragreen_noiseless_aug = augment_spectra_parallel(spectragreen_extended,
+                                                                                synth_grid_green_extended,
+                                                                                weave_green_grid_extended,
+                                                                                vrot_list, noise_list, vrad_list,
+                                                                                instrument_res)
+        spectrared_aug, spectrared_noiseless_aug = augment_spectra_parallel(spectrared_extended,
+                                                                            synth_grid_red_extended,
+                                                                            weave_red_grid_extended,
+                                                                            vrot_list, noise_list, vrad_list,
+                                                                            instrument_res)
+        print('Total modify time: %.1f s' % (time.time() - t1))
+
+        for i in range(len(spectrablue_aug)):
+            spectrablue_aug[i] = remove_interccd_gaps(spectrablue_aug[i], weave_blue_grid_extended)
+            spectragreen_aug[i] = remove_interccd_gaps(spectragreen_aug[i], weave_green_grid_extended)
+            spectrared_aug[i] = remove_interccd_gaps(spectrared_aug[i], weave_red_grid_extended)
+            spectrablue_noiseless_aug[i] = remove_interccd_gaps(spectrablue_noiseless_aug[i], weave_blue_grid_extended)
+            spectragreen_noiseless_aug[i] = remove_interccd_gaps(spectragreen_noiseless_aug[i], weave_green_grid_extended)
+            spectrared_noiseless_aug[i] = remove_interccd_gaps(spectrared_noiseless_aug[i], weave_red_grid_extended)
 
 
         # Continuum normalize
-        spectrablue_nolines99 = continuum_normalize_parallel(spectrablue, weave_blue_grid,
+        spectrablue_nolines99 = continuum_normalize_parallel(spectrablue_aug, weave_blue_grid_extended,
                                                              line_regions=None, segments_step=SEGMENTS_STEP,
                                                              fit='asym_sigmaclip', spline_fit=99)
-        spectragreen_nolines99 = continuum_normalize_parallel(spectragreen, weave_green_grid,
+        spectragreen_nolines99 = continuum_normalize_parallel(spectragreen_aug, weave_green_grid_extended,
                                                               line_regions=None, segments_step=SEGMENTS_STEP,
                                                               fit='asym_sigmaclip', spline_fit=99)
-        spectrared_nolines99 = continuum_normalize_parallel(spectrared, weave_red_grid,
+        spectrared_nolines99 = continuum_normalize_parallel(spectrared_aug, weave_red_grid_extended,
                                                             line_regions=None, segments_step=SEGMENTS_STEP,
                                                             fit='asym_sigmaclip', spline_fit=99)
-        spectrablue_nolinessym = continuum_normalize_parallel(spectrablue, weave_blue_grid,
+        spectrablue_nolinessym = continuum_normalize_parallel(spectrablue_aug, weave_blue_grid_extended,
                                                               line_regions=None, segments_step=SEGMENTS_STEP,
                                                               fit='asym_sigmaclip', sigma_upper=1.5,
                                                               sigma_lower=1.5, spline_fit=99)
-        spectragreen_nolinessym = continuum_normalize_parallel(spectragreen, weave_green_grid,
+        spectragreen_nolinessym = continuum_normalize_parallel(spectragreen_aug, weave_green_grid_extended,
                                                                line_regions=None, segments_step=SEGMENTS_STEP,
                                                                fit='asym_sigmaclip', sigma_upper=1.5,
                                                                sigma_lower=1.5, spline_fit=99)
-        spectrared_nolinessym = continuum_normalize_parallel(spectrared, weave_red_grid,
+        spectrared_nolinessym = continuum_normalize_parallel(spectrared_aug, weave_red_grid_extended,
                                                              line_regions=None, segments_step=SEGMENTS_STEP,
                                                              fit='asym_sigmaclip', sigma_upper=1.5, sigma_lower=1.5,
                                                              spline_fit=99)
 
         # Continuum normalize
-        spectrablue_nolines99_noiseless = continuum_normalize_parallel(spectrablue_noiseless, weave_blue_grid,
+        spectrablue_nolines99_noiseless = continuum_normalize_parallel(spectrablue_noiseless_aug, weave_blue_grid_extended,
                                                              line_regions=None, segments_step=SEGMENTS_STEP,
                                                              fit='asym_sigmaclip', spline_fit=99)
-        spectragreen_nolines99_noiseless = continuum_normalize_parallel(spectragreen_noiseless, weave_green_grid,
+        spectragreen_nolines99_noiseless = continuum_normalize_parallel(spectragreen_noiseless_aug, weave_green_grid_extended,
                                                               line_regions=None, segments_step=SEGMENTS_STEP,
                                                               fit='asym_sigmaclip', spline_fit=99)
-        spectrared_nolines99_noiseless = continuum_normalize_parallel(spectrared_noiseless, weave_red_grid,
+        spectrared_nolines99_noiseless = continuum_normalize_parallel(spectrared_noiseless_aug, weave_red_grid_extended,
                                                             line_regions=None, segments_step=SEGMENTS_STEP,
                                                             fit='asym_sigmaclip', spline_fit=99)
-        spectrablue_nolinessym_noiseless = continuum_normalize_parallel(spectrablue_noiseless, weave_blue_grid,
+        spectrablue_nolinessym_noiseless = continuum_normalize_parallel(spectrablue_noiseless_aug, weave_blue_grid_extended,
                                                               line_regions=None, segments_step=SEGMENTS_STEP,
                                                               fit='asym_sigmaclip', sigma_upper=1.5,
                                                               sigma_lower=1.5, spline_fit=99)
-        spectragreen_nolinessym_noiseless = continuum_normalize_parallel(spectragreen_noiseless, weave_green_grid,
+        spectragreen_nolinessym_noiseless = continuum_normalize_parallel(spectragreen_noiseless_aug, weave_green_grid_extended,
                                                                line_regions=None, segments_step=SEGMENTS_STEP,
                                                                fit='asym_sigmaclip', sigma_upper=1.5,
                                                                sigma_lower=1.5, spline_fit=99)
-        spectrared_nolinessym_noiseless = continuum_normalize_parallel(spectrared_noiseless, weave_red_grid,
+        spectrared_nolinessym_noiseless = continuum_normalize_parallel(spectrared_noiseless_aug, weave_red_grid_extended,
                                                              line_regions=None, segments_step=SEGMENTS_STEP,
                                                              fit='asym_sigmaclip', sigma_upper=1.5, sigma_lower=1.5,
                                                              spline_fit=99)
 
         print('Total continuum time: %.2f s' % (time.time() - t1))
 
-        # Remove the extension
-        weave_blue_indices_short = (weave_blue_grid >= blue_wvl_min) & (weave_blue_grid <= blue_wvl_max)
-        weave_green_indices_short = (weave_green_grid >= green_wvl_min) & (weave_green_grid <= green_wvl_max)
-        weave_red_indices_short = (weave_red_grid >= red_wvl_min) & (weave_red_grid <= red_wvl_max)
-        weave_blue_grid_short = weave_blue_grid[weave_blue_indices_short]
-        weave_green_grid_short = weave_green_grid[weave_green_indices_short]
-        weave_red_grid_short = weave_red_grid[weave_red_indices_short]
+        # Now remove the extension
+        weave_blue_indices = (weave_blue_grid_extended >= blue_wvl_min) & (
+                weave_blue_grid_extended <= blue_wvl_max)
+        weave_green_indices = (weave_green_grid_extended >= green_wvl_min) & (
+                weave_green_grid_extended <= green_wvl_max)
+        weave_red_indices = (weave_red_grid_extended >= red_wvl_min) & (
+                weave_red_grid_extended <= red_wvl_max)
 
-        # spectrablue_norm = np.asarray(spectrablue_norm)[:, weave_blue_indices_short]
-        # spectragreen_norm = np.asarray(spectragreen_norm)[:, weave_green_indices_short]
-        # spectrared_norm = np.asarray(spectrared_norm)[:, weave_red_indices_short]
-        # spectrablue_nolines = np.asarray(spectrablue_nolines)[:, weave_blue_indices_short]
-        # spectragreen_nolines = np.asarray(spectragreen_nolines)[:, weave_green_indices_short]
-        # spectrared_nolines = np.asarray(spectrared_nolines)[:, weave_red_indices_short]
-        spectrablue_nolines99 = np.asarray(spectrablue_nolines99)[:, weave_blue_indices_short]
-        spectragreen_nolines99 = np.asarray(spectragreen_nolines99)[:, weave_green_indices_short]
-        spectrared_nolines99 = np.asarray(spectrared_nolines99)[:, weave_red_indices_short]
-        spectrablue_nolinessym = np.asarray(spectrablue_nolinessym)[:, weave_blue_indices_short]
-        spectragreen_nolinessym = np.asarray(spectragreen_nolinessym)[:, weave_green_indices_short]
-        spectrared_nolinessym = np.asarray(spectrared_nolinessym)[:, weave_red_indices_short]
+        spectrablue_nolines99 = np.asarray(spectrablue_nolines99)[:, weave_blue_indices]
+        spectragreen_nolines99 = np.asarray(spectragreen_nolines99)[:, weave_green_indices]
+        spectrared_nolines99 = np.asarray(spectrared_nolines99)[:, weave_red_indices]
+        spectrablue_nolinessym = np.asarray(spectrablue_nolinessym)[:, weave_blue_indices]
+        spectragreen_nolinessym = np.asarray(spectragreen_nolinessym)[:, weave_green_indices]
+        spectrared_nolinessym = np.asarray(spectrared_nolinessym)[:, weave_red_indices]
 
-        spectrablue_nolines99_noiseless = np.asarray(spectrablue_nolines99_noiseless)[:, weave_blue_indices_short]
-        spectragreen_nolines99_noiseless = np.asarray(spectragreen_nolines99_noiseless)[:, weave_green_indices_short]
-        spectrared_nolines99_noiseless = np.asarray(spectrared_nolines99_noiseless)[:, weave_red_indices_short]
-        spectrablue_nolinessym_noiseless = np.asarray(spectrablue_nolinessym_noiseless)[:, weave_blue_indices_short]
-        spectragreen_nolinessym_noiseless = np.asarray(spectragreen_nolinessym_noiseless)[:, weave_green_indices_short]
-        spectrared_nolinessym_noiseless = np.asarray(spectrared_nolinessym_noiseless)[:, weave_red_indices_short]
+        spectrablue_nolines99_noiseless = np.asarray(spectrablue_nolines99_noiseless)[:, weave_blue_indices]
+        spectragreen_nolines99_noiseless = np.asarray(spectragreen_nolines99_noiseless)[:, weave_green_indices]
+        spectrared_nolines99_noiseless = np.asarray(spectrared_nolines99_noiseless)[:, weave_red_indices]
+        spectrablue_nolinessym_noiseless = np.asarray(spectrablue_nolinessym_noiseless)[:, weave_blue_indices]
+        spectragreen_nolinessym_noiseless = np.asarray(spectragreen_nolinessym_noiseless)[:, weave_green_indices]
+        spectrared_nolinessym_noiseless = np.asarray(spectrared_nolinessym_noiseless)[:, weave_red_indices]
 
-        weave_grid_concat = np.concatenate((weave_blue_grid_short, weave_green_grid_short, weave_red_grid_short))
+        # weave_grid_concat = np.concatenate((weave_blue_grid, weave_green_grid, weave_red_grid))
         # weave_spectra_concat = np.concatenate((spectrablue_norm, spectragreen_norm, spectrared_norm), 1)
         # weave_spectra_nolines_concat = np.concatenate((spectrablue_nolines, spectragreen_nolines, spectrared_nolines),
         #                                               1)
@@ -954,6 +989,13 @@ def preprocess_batch_of_weave_spectra(file_list, wave_grid_obs, instrument_res, 
             (spectrablue_nolines99_noiseless, spectragreen_nolines99_noiseless, spectrared_nolines99_noiseless), 1)
         weave_spectra_nolines_concatsym_noiseless = np.concatenate(
             (spectrablue_nolinessym_noiseless, spectragreen_nolinessym_noiseless, spectrared_nolinessym_noiseless), 1)
+
+        # Stitch together final wave grid
+        weave_blue_grid_final = wave_grid_obs[weave_blue_indices]
+        weave_green_grid_final = wave_grid_obs[weave_green_indices]
+        weave_red_grid_final = wave_grid_obs[weave_red_indices]
+
+        weave_grid_final = np.concatenate((weave_blue_grid_final, weave_green_grid_final, weave_red_grid_final))
 
         spectra_dict = {'spectra_asymnorm_nolinemask99': weave_spectra_nolines_concat99,
                         'spectra_symnorm_nolinemask99': weave_spectra_nolines_concatsym,
@@ -988,7 +1030,7 @@ def preprocess_batch_of_weave_spectra(file_list, wave_grid_obs, instrument_res, 
     else:
         spectra_dict, params_dict = {}, {}
 
-    return spectra_dict, params_dict, abundances
+    return spectra_dict, params_dict, abundances, weave_grid_final
 
 
 def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max_vrot_to_apply=70,
@@ -1036,7 +1078,7 @@ def preprocess_batch_of_aat_spectra(file_list, wave_grid_obs, batch_size=32, max
 
     if batch_size > 0:
         vrad_list = np.random.uniform(low=-max_vrad_to_apply, high=max_vrad_to_apply, size=(batch_size,))
-        vrot_list = np.random.uniform(low=0, high=max_vrot_to_apply, size=(batch_size,))
+        vrot_list = np.random.randint(low=0, high=max_vrot_to_apply, size=(batch_size,))
         noise_list = np.random.uniform(low=0, high=max_noise, size=(batch_size,))
 
         # Modify spectra in parallel (degrade resolution, apply rotational broadening, etc.)

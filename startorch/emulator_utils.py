@@ -4,157 +4,15 @@ import h5py
 import numpy as np
 import torch
 import random
-import argparse
 from torch.utils import data
 from torch.utils.data.sampler import SubsetRandomSampler
-
-
-def str2bool(v):
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-
-def get_mean_and_std(data_file, indices, model_folder, targets):
-
-    """
-    Returns the mean and standard deviation of a dataset contained in an h5 file.
-    :return: ndarray mu: mean of the dataset.
-    :return: ndarray sigma: standard deviation of the dataset
-    """
-
-    def stats(x, indices):
-
-        n = 0
-        S = 0.0
-        m = 0.0
-        total = len(indices)
-        max_chunk_size = 1000
-        point = total / 100
-        increment = total / 20
-        indices = sorted(indices)  # sorting is needed for indexing h5py file
-
-        for i in range(0, total, max_chunk_size):
-            # if(i % (5 * point) == 0):
-            sys.stdout.write("\r[" + "=" * int(i / increment) + " " * int((total - i) / increment) + "]" + str(
-                int(i / point)) + "%")
-            sys.stdout.flush()
-            indices_chunk = indices[i:i + max_chunk_size]
-            x_subset = x[indices_chunk]
-
-            if len(x_subset) > 0:
-                for x_i in x_subset:
-                    n = n + 1
-                    m_prev = m
-                    m = m + (x_i - m) / n
-                    S = S + (x_i - m) * (x_i - m_prev)
-        return m, np.sqrt(S / n)
-
-    mean_std_params_path = os.path.join(model_folder, 'mean_std_params.npy')
-    if os.path.exists(mean_std_params_path):
-        sys.stdout.write('[INFO] Acquiring mu and sigma from numpy file...\n')
-        mean, std = np.load(mean_std_params_path)
-        print('mean: {}'.format(mean))
-        print('std: {}'.format(std))
-    else:
-        sys.stdout.write('[INFO] Calculating mean and std to normalize each label...\n')
-        with h5py.File(data_file, 'r') as f:
-            mean = []
-            std = []
-            num_targets = len(targets)
-            for j, target in enumerate(targets):
-                sys.stdout.write('%s/%s %s\n' % (j + 1, num_targets, target))
-                mu_, sigma_ = stats(f[target], indices)
-                sys.stdout.write(' mu: %.1f, sigma: %.1f' % (mu_, sigma_))
-                sys.stdout.write('\n')
-                mean.append(mu_)
-                std.append(sigma_)
-        mean = np.array(mean)
-        std = np.array(std)
-        sys.stdout.write('Saving mean and std file')
-        np.save(mean_std_params_path, np.array([mean, std]))
-
-    return mean, std
-
-
-# Loading data
-def load_data(data_file, indices, targets):
-    with h5py.File(data_file, 'r') as F:
-        indices = indices.tolist()
-        indices.sort()
-        # Loading inputs
-        inputs = [F[target][indices] for target in targets]
-        inputs = np.stack(inputs, axis=1)
-        # Loading labels
-        labels = np.array(F['spectra_asymnorm_noiseless'][indices])
-    return inputs, labels
-
-
-def remove_g_or_b_arm(spectrum):
-    blue_spectrum = spectrum[:11880]
-    green_spectrum = spectrum[11880:25880]
-    red_spectrum = spectrum[25880:]
-    partitioned_spectrum = [blue_spectrum, green_spectrum, red_spectrum]
-
-    # Determine which arm to remove
-    remove_arm = np.random.randint(0, 2)
-    # Replace arm with noise
-    partitioned_spectrum[remove_arm] = np.random.normal(1, .005,
-                                                        np.shape(partitioned_spectrum[remove_arm]))
-
-    spectrum = np.concatenate(partitioned_spectrum)
-
-    return spectrum
-
-
-# Defining l2 loss
-def l2(y_pred,y_true):
-    return torch.sqrt(nanmean((y_pred-y_true)**2))
-
-
-# Defining l1 loss
-def l1(y_pred,y_true):
-    return (nanmean(torch.abs(y_pred-y_true)))
-
-
-def nanmean(v, *args, inplace=False, **kwargs):
-    if not inplace:
-        v = v.clone()
-    is_nan = torch.isnan(v)
-    is_inf = torch.isinf(v)
-    v[is_nan] = 0
-    v[is_inf] = 0
-    return v.sum(*args, **kwargs) / (~(is_nan&is_inf)).float().sum(*args, **kwargs)
-
-
-def add_noise(x, max_noise=0.07):
-
-    noise_factor = random.uniform(0, max_noise)
-    x += noise_factor * np.random.normal(loc=0.0, scale=1.0, size=x.shape)
-
-    return x
-
-
-def remove_interccd_gaps(spectrum, wave_grid):
-    indices_blue = (wave_grid >= 4495) & (wave_grid <= 4541)
-    indices_green = (wave_grid >= 5266) & (wave_grid <= 5319)
-    indices_red = (wave_grid >= 6366) & (wave_grid <= 6441)
-    spectrum[indices_blue] = np.random.normal(1, .0005, np.shape(spectrum[indices_blue]))
-    spectrum[indices_green] = np.random.normal(1, .0005, np.shape(spectrum[indices_green]))
-    spectrum[indices_red] = np.random.normal(1, .0005, np.shape(spectrum[indices_red]))
-
-    return spectrum
+from .utils import get_mean_and_std, add_noise
 
 
 class HDF5Dataset(data.Dataset):
     def __init__(self, in_file, labels_key, spectra_key, mean, std, n_samples, add_zeros=True,
-                 remove_gaps=False, remove_arm=False, noise_addition=False, min_wvl=None, max_wvl=None,
-                 starlink_mode=True):
+                 remove_gaps=False, remove_arm=False, noise_addition=False, wavegrid_path='',
+                 min_wvl=None, max_wvl=None):
         super(HDF5Dataset, self).__init__()
 
         self.labels_key = labels_key
@@ -169,7 +27,13 @@ class HDF5Dataset(data.Dataset):
         self.noise_addition = noise_addition
         self.min_wvl = min_wvl
         self.max_wvl = max_wvl
-        self.starlink_mode = starlink_mode
+
+        if wavegrid_path:
+            self.wave_grid = np.load(wavegrid_path)
+        else:
+            with h5py.File(self.in_file, 'r') as f:
+                self.wave_grid = f['wave_grid'][:]
+
 
     def __getitem__(self, index):
 
@@ -177,19 +41,11 @@ class HDF5Dataset(data.Dataset):
             labels = np.asarray([f[target][index] for target in self.labels_key])
             labels = (labels - self.mean)/self.std
 
-            ind = np.random.randint(2)
-            if self.starlink_mode:
-                spectra_keys = ['spectra', 'spectra+solar']
-                self.spectra_key = spectra_keys[ind]
-                labels = np.asarray([0], dtype=float) if ind==0 else np.asarray([f['frac_solar'][index]])
-
             spectrum = f[self.spectra_key][index]
-            spectrum = (spectrum - f['mean_flux'][...]) / f['std_flux'][...]
             spectrum[np.isnan(spectrum)] = 0
             spectrum[np.isinf(spectrum)] = 0
             #spectrum[spectrum > 2] = 0
             #spectrum[spectrum < 0] = 0
-            wave_grid = f['wave_grid'][:]
 
             # inject zeros
             if self.add_zeros:
@@ -201,12 +57,8 @@ class HDF5Dataset(data.Dataset):
                     spectrum[indices] = 0
             if self.noise_addition:
                 spectrum = add_noise(spectrum)
-            if self.remove_gaps:
-                spectrum = remove_interccd_gaps(spectrum, wave_grid)
-            if self.remove_arm:
-                spectrum = remove_g_or_b_arm(spectrum)
             if self.min_wvl and self.max_wvl:
-                wvl_indices = (wave_grid > self.min_wvl) & (wave_grid < self.max_wvl)
+                wvl_indices = (self.wave_grid > self.min_wvl) & (self.wave_grid < self.max_wvl)
                 spectrum = spectrum[wvl_indices]
             #if self.min_wvl:
             #    wvl_indices = wave_grid > self.min_wvl
@@ -244,9 +96,9 @@ def get_train_valid_loader(data_path,
                            remove_arm=False,
                            noise_addition=False,
                            val_data_path='',
+                           wavegrid_path='',
                            min_wvl=None,
-                           max_wvl=None,
-                           starlink_mode=False
+                           max_wvl=None
                            ):
     """
     Utility function for loading and returning train and valid
@@ -291,12 +143,12 @@ def get_train_valid_loader(data_path,
     # Initialize data loaders
     train_dataset = HDF5Dataset(data_path, labels_key=labels_key, spectra_key=spectra_key,
                                 mean=mean, std=std, n_samples=len(indices_train), remove_gaps=remove_gaps,
-                                remove_arm=remove_arm, noise_addition=noise_addition, min_wvl=min_wvl, max_wvl=max_wvl,
-                                starlink_mode=starlink_mode)
+                                remove_arm=remove_arm, noise_addition=noise_addition, wavegrid_path=wavegrid_path,
+                                min_wvl=min_wvl, max_wvl=max_wvl)
     valid_dataset = HDF5Dataset(val_data_path, labels_key=labels_key, spectra_key=spectra_key,
                                 mean=mean, std=std, n_samples=len(indices_val), remove_gaps=remove_gaps,
-                                remove_arm=remove_arm, noise_addition=noise_addition, min_wvl=min_wvl, max_wvl=max_wvl,
-                                starlink_mode=starlink_mode)
+                                remove_arm=remove_arm, noise_addition=noise_addition, wavegrid_path=wavegrid_path,
+                                min_wvl=min_wvl, max_wvl=max_wvl)
 
     train_sampler = SubsetRandomSampler(indices_train)
     valid_sampler = SubsetRandomSampler(indices_val)
@@ -312,7 +164,7 @@ def get_train_valid_loader(data_path,
 
     with h5py.File(data_path, 'r') as f:
         spec = f[spectra_key][0]
-        wave_grid = f['wave_grid'][:]
+        wave_grid = train_dataset.wave_grid
         if min_wvl and max_wvl:
             wvl_indices = (wave_grid > min_wvl) & (wave_grid < max_wvl)
             spec = spec[wvl_indices]
@@ -322,3 +174,62 @@ def get_train_valid_loader(data_path,
         len_spec = len(spec)
 
     return train_loader, valid_loader, len_spec
+
+
+# Function to execute a training epoch
+def train_epoch_generator(NN,training_generator,optimizer,device,train_steps,loss_fn):
+
+    NN.train()
+    loss = 0
+    # Passing the data through the NN
+    for i, (labels, spectra) in enumerate(training_generator):
+        #sys.stdout.write('{}\n'.format(i))
+
+        x = labels
+        y = spectra
+
+        # Transfer to device
+        x = x.to(device).float().view(-1, 1, np.shape(x)[1])
+        y_true = y.to(device).float()
+
+        # perform a forward pass and calculate loss
+        y_pred = NN(x)
+        batch_loss = loss_fn(y_pred, y_true)
+
+        # zero out the gradients, perform the backpropagation step,
+        # and update the weights
+        optimizer.zero_grad()
+        batch_loss.backward()
+        optimizer.step()
+
+        # add batch loss to the total training loss
+        loss += batch_loss
+
+    #scheduler.step()
+    #MSE = (loss / (batch_size * (n_train // batch_size))).detach().cpu().numpy()
+    avgLoss = loss / train_steps
+    avgLoss = avgLoss.detach().cpu().numpy()
+    return avgLoss
+
+
+# Function to execute a validation epoch
+def val_epoch_generator(NN,valid_generator,device,val_steps,loss_fn):
+    with torch.no_grad():
+        NN.eval()
+        loss = 0
+        # Passing the data through the NN
+        for labels, spectra in valid_generator:
+            x = labels
+            y = spectra
+
+            # Transfer to device
+            x = x.to(device).float().view(-1, 1, np.shape(x)[1])
+            y_true = y.to(device).float()
+
+            y_pred = NN(x)
+            loss += loss_fn(y_pred, y_true)#*batch_size
+        #MSE = (loss/(batch_size*(n_val//batch_size))).detach().cpu().numpy()
+        avgLoss = loss / val_steps
+        avgLoss = avgLoss.detach().cpu().numpy()
+
+        return avgLoss

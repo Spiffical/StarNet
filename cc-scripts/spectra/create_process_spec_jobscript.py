@@ -94,8 +94,9 @@ def write_job_file(output_path, script_path, spec_dir, save_dir, virtual_env, wa
     print('Writing file to {}'.format(output_path))
     with open(output_path, 'w') as writer:
         writer.write('#!/bin/bash\n')
-        writer.write('module load python/3.6\n')
+        writer.write('module load python/3.7\n')
         writer.write('source {}\n'.format(os.path.join(HOME_DIR, virtual_env, 'bin/activate')))
+        writer.write('module load python/3.7\n')
         writer.write('python -c "from eniric import config; config.copy_file(\'.\')"\n')
         writer.write('cp -r {} {}\n'.format(os.path.join(HOME_DIR, 'StarNet'), '$SLURM_TMPDIR'))
         writer.write('cp -r {} {}\n'.format(spec_dir, '$SLURM_TMPDIR'))

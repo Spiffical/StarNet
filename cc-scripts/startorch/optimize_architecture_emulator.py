@@ -1,7 +1,6 @@
 import os
 import argparse
 import numpy as np
-import random
 
 HOME_DIR = os.getenv('HOME')
 SCRATCH_DIR = os.getenv('SCRATCH')
@@ -29,37 +28,17 @@ parser.add_argument('-e', '--epochs', type=int, default=300,
                     help='Maximum number of epochs for training')
 parser.add_argument('--noise_addition', type=str, default='False',
                         help='Add noise if True')
-parser.add_argument('--remove_gaps', type=str, default='False',
-                    help='Remove interccd gaps if True')
-parser.add_argument('--remove_arm', type=str, default='False',
-                    help='Randomly remove blue or green arm if true')
 parser.add_argument('--weight_decay', type=float, default=0.,
                     help='Weight decay (for L2 regularization)')
 parser.add_argument('--val_data_path', type=str, default='',
                         help='Path of validation file')
+parser.add_argument('--wavegrid_path', type=str, default='',
+                        help='Path of wavegrid (needed if wave_grid is not in data file)')
 parser.add_argument('--min_wvl', type=float, default=None,
                         help='Minimum wavelength of spectra that should be kept')
 parser.add_argument('--max_wvl', type=float, default=None,
                     help='Maximum wavelength of spectra that should be kept')
 args = parser.parse_args()
-
-output_path = args.output_path
-data_path = args.data_path
-num_train = args.num_train
-train_script = args.train_script
-targets = args.targets
-save_folder = args.save_folder
-spec_key = args.spec_key
-max_epochs = args.epochs
-virtual_env = args.virtual_env
-epochs = args.epochs
-noise_addition = args.noise_addition
-remove_gaps = args.remove_gaps
-remove_arm = args.remove_arm
-weight_decay = args.weight_decay
-val_data_path = args.val_data_path
-min_wvl = args.min_wvl
-max_wvl = args.max_wvl
 
 
 def str2bool(v):
@@ -74,8 +53,8 @@ def str2bool(v):
 
 
 def write_script(output_path, data_path, train_script, virtual_env, num_train, targets, spec_key,
-                 save_folder, batch_size, epochs, sizes, lr, noise_addition, remove_gaps, remove_arm, weight_decay,
-                 val_data_path, min_wvl, max_wvl):
+                 save_folder, batch_size, epochs, sizes, lr, noise_addition, weight_decay, val_data_path,
+                 wavegrid_path, min_wvl, max_wvl):
 
     if not output_path.endswith('.sh'):
         output_path += '.sh'
@@ -123,12 +102,15 @@ def write_script(output_path, data_path, train_script, virtual_env, num_train, t
             writer.write('--weight_decay %s \\\n' % weight_decay)
         if val_data_path:
             writer.write('--val_data_path %s \\\n' % val_data_path)
+        if wavegrid_path:
+            writer.write('--wavegrid_path %s \\\n' % wavegrid_path)
         if min_wvl:
             writer.write('--min_wvl %s \\\n' % min_wvl)
         if max_wvl:
             writer.write('--max_wvl %s \\\n' % max_wvl)
         writer.write('--learning_rate %s' % lr)
-        
+
+
 for sample in range(20):
 
     num_layers = np.random.randint(2, 5)
@@ -156,37 +138,10 @@ for sample in range(20):
 
     output_path = output_job_path[:-3] + '_{}.sh'.format(sample)
 
-    new_save_folder = os.path.join(save_folder, name)
-    write_script(output_path, data_path, train_script, virtual_env, num_train, targets, spec_key,
-                 new_save_folder, batch_size, epochs, sizes, lr, str2bool(noise_addition),
-                 str2bool(remove_gaps), str2bool(remove_arm), weight_decay,
-                 val_data_path, min_wvl, max_wvl)
-
-    # num_layers = np.random.randint(3,7)
-    # sizes = np.random.randint(0,400,(num_layers))
-    # sizes[0] += 50
-    # for i in range(num_layers-1):
-    #     sizes[i+1] += sizes[i]
-    # lr = np.random.uniform(1e-3,1e-2)
-    # batch_size = 64*np.random.randint(1,4)
-    #
-    # name = 'n-{}'.format(num_layers)
-    # for i in range(num_layers):
-    #     name = name + '_{}'.format(sizes[i])
-    # name = name + '_lr-{:.4f}_batchsize-{}'.format(lr,batch_size)
-    # config = [sizes,lr,batch_size]
-    #
-    # output_job_path = args.output_path
-    # output_job_folder = os.path.dirname(output_job_path)
-    # if not os.path.exists(output_job_folder):
-    #     os.makedirs(output_job_folder)
-    # if not output_job_path.endswith('.sh'):
-    #     output_job_path += '.sh'
-    #
-    # output_path = output_job_path[:-3] + '_{}.sh'.format(sample)
-    #
-    # new_save_folder = os.path.join(save_folder, name)
-    # write_script(output_path, data_path, train_script, virtual_env, num_train, targets, spec_key,
-    # new_save_folder, batch_size, epochs, sizes, lr)
+    new_save_folder = os.path.join(args.save_folder, name)
+    write_script(output_path, args.data_path, args.train_script, args.virtual_env, args.num_train,
+                 args.targets, args.spec_key, new_save_folder, batch_size, args.epochs, sizes, lr,
+                 str2bool(args.noise_addition), args.weight_decay, args.val_data_path, args.wavegrid_path,
+                 args.min_wvl, args.max_wvl)
 
 

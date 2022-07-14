@@ -115,7 +115,7 @@ def main():
                                                                         max_feh=args.max_feh,
                                                                         min_feh=args.min_feh)
         elif args.telescope.lower() == 'weave':
-            spectra, params, abundances = preprocess_batch_of_weave_spectra(file_list, wave_grid_obs,
+            spectra, params, abundances, wave_grid_obs = preprocess_batch_of_weave_spectra(file_list, wave_grid_obs,
                                                                             args.resolution,
                                                                         batch_size=args.batch_size,
                                                                         max_vrot_to_apply=args.rotational_vel,

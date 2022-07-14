@@ -93,7 +93,7 @@ def get_batch(filepath,indices,targets,mean,std,batch_size,n):
 
 
 # Function to execute a training epoch
-def train_epoch_generator(NN,training_generator,scheduler,optimizer,device,train_steps,loss_fn):
+def train_epoch_generator(NN,training_generator,optimizer,device,train_steps,loss_fn):
 
     NN.train()
     loss = 0
@@ -152,7 +152,7 @@ def val_epoch_generator(NN,valid_generator,device,val_steps,loss_fn):
 
 
 def train_NN(lr, batch_size, num_train, data_path, targets, spec_key, save_folder, max_epochs, noise_addition,
-             remove_gaps, remove_arm, weight_decay, val_data_path, min_wvl, max_wvl):
+             remove_gaps, remove_arm, weight_decay, val_data_path, min_wvl, max_wvl, starlink_mode):
 
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
@@ -179,7 +179,8 @@ def train_NN(lr, batch_size, num_train, data_path, targets, spec_key, save_folde
                                                                   noise_addition=noise_addition,
                                                                   val_data_path=val_data_path,
                                                                   min_wvl=min_wvl,
-                                                                  max_wvl=max_wvl)
+                                                                  max_wvl=max_wvl,
+                                                                  starlink_mode=starlink_mode)
 
     trainSteps = len(train_loader.dataset) // batch_size
     valSteps = len(valid_loader.dataset) // batch_size
@@ -226,7 +227,6 @@ def train_NN(lr, batch_size, num_train, data_path, targets, spec_key, save_folde
         sys.stdout.write('Epoch {}\n'.format(epoch))
         # Training epoch
         loss_train = train_epoch_generator(NN, training_generator=train_loader,
-                                           scheduler=scheduler,
                                            optimizer=optimizer,
                                            device=device,
                                            train_steps=trainSteps,
@@ -290,6 +290,8 @@ if __name__ == "__main__":
                         help='Minimum wavelength of spectra that should be kept')
     parser.add_argument('--max_wvl', type=float, default=None,
                         help='Maximum wavelength of spectra that should be kept')
+    parser.add_argument('--starlink_mode', type=str, default='False',
+                        help='Whether to randomly select a solar-contaminated spectrum')
 
     args = parser.parse_args()
 
@@ -309,6 +311,7 @@ if __name__ == "__main__":
     val_data_path = args.val_data_path
     min_wvl = args.min_wvl
     max_wvl = args.max_wvl
+    starlink_mode = str2bool(args.starlink_mode)
 
     torch.multiprocessing.set_start_method('spawn')
 
@@ -323,6 +326,7 @@ if __name__ == "__main__":
              weight_decay,
              val_data_path,
              min_wvl,
-             max_wvl)
+             max_wvl,
+             starlink_mode)
 
 

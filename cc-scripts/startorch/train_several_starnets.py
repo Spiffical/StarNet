@@ -43,6 +43,8 @@ parser.add_argument('--min_wvl', type=float, default=None,
                         help='Minimum wavelength of spectra that should be kept')
 parser.add_argument('--max_wvl', type=float, default=None,
                     help='Maximum wavelength of spectra that should be kept')
+parser.add_argument('--starlink_mode', type=str, default='False',
+                    help='Whether to randomly select a solar-contaminated spectrum')
 args = parser.parse_args()
 
 output_path = args.output_path
@@ -64,6 +66,7 @@ min_wvl = args.min_wvl
 max_wvl = args.max_wvl
 lr = args.learning_rate
 batch_size = args.batch_size
+starlink_mode = args.starlink_mode
 
 
 def str2bool(v):
@@ -79,7 +82,7 @@ def str2bool(v):
 
 def write_script(output_path, data_path, train_script, virtual_env, num_train, targets, spec_key,
                  save_folder, batch_size, epochs, lr, noise_addition, remove_gaps, remove_arm, weight_decay,
-                 val_data_path, min_wvl, max_wvl):
+                 val_data_path, min_wvl, max_wvl, starlink_mode):
 
     if not output_path.endswith('.sh'):
         output_path += '.sh'
@@ -128,6 +131,8 @@ def write_script(output_path, data_path, train_script, virtual_env, num_train, t
             writer.write('--min_wvl %s \\\n' % min_wvl)
         if max_wvl:
             writer.write('--max_wvl %s \\\n' % max_wvl)
+        if starlink_mode:
+            writer.write('--starlink_mode %s \\\n' % starlink_mode)
         writer.write('--learning_rate %s' % lr)
 
 
@@ -149,6 +154,6 @@ for sample in range(20):
     write_script(output_path, data_path, train_script, virtual_env, num_train, targets, spec_key,
                  new_save_folder, batch_size, epochs, lr, str2bool(noise_addition),
                  str2bool(remove_gaps), str2bool(remove_arm), weight_decay,
-                 val_data_path, min_wvl, max_wvl)
+                 val_data_path, min_wvl, max_wvl, str2bool(starlink_mode))
 
 
